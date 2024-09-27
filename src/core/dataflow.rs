@@ -1,13 +1,12 @@
-use super::merkle::tree_builder::TreeBuilder;
-use super::merkle::tree::Tree;
-use ethers::types::H256;
-use tiny_keccak::{Hasher, Keccak};
-use std::sync::Arc;
-use tokio::sync::Mutex;
-use futures::future::join_all;
-use anyhow::{Result, anyhow};
-use lazy_static::lazy_static;
 use super::iterator::Iterator as CustomIterator;
+use super::merkle::tree::Tree;
+use super::merkle::tree_builder::TreeBuilder;
+use anyhow::{anyhow, Result};
+use ethers::types::H256;
+use futures::future::join_all;
+use lazy_static::lazy_static;
+use std::sync::Arc;
+use tiny_keccak::{Hasher, Keccak};
 
 pub const DEFAULT_CHUNK_SIZE: usize = 256;
 pub const DEFAULT_SEGMENT_MAX_CHUNKS: usize = 1024;
@@ -33,26 +32,46 @@ pub trait IterableData: Send + Sync {
     fn read(&self, buf: &mut [u8], offset: i64) -> Result<usize>;
 }
 
-
 pub async fn merkle_tree(data: Arc<dyn IterableData>) -> Result<Tree> {
-    let builder = Arc::new(Mutex::new(TreeBuilder::new()));
-    let tasks = (0..num_segments_padded(data.as_ref())).map(|i| {
-        let data = Arc::clone(&data);
-        let builder = Arc::clone(&builder);
-        tokio::spawn(async move {
-            let offset = i as i64 * DEFAULT_SEGMENT_SIZE as i64;
-            let buf = read_at(data.as_ref(), DEFAULT_SEGMENT_SIZE, offset, data.padded_size())?;
-            let hash = segment_root(&buf);
-            builder.lock().await.append_hash(hash);
-            Ok::<_, anyhow::Error>(())
+    let num_segments = num_segments_padded(data.as_ref());
+
+    let tasks: Vec<_> = (0..num_segments)
+        .map(|i| {
+            let data = Arc::clone(&data);
+            tokio::spawn(async move {
+                let offset = i as i64 * DEFAULT_SEGMENT_SIZE as i64;
+                let result = read_at(
+                    data.as_ref(),
+                    DEFAULT_SEGMENT_SIZE,
+                    offset,
+                    data.padded_size(),
+                )
+                .map(|buf| segment_root(&buf))?;
+                Ok::<_, anyhow::Error>((i, result))
+            })
         })
-    });
+        .collect();
 
-    join_all(tasks).await.into_iter().collect::<Result<Vec<_>, _>>()
-        .map_err(|e| anyhow!("Task error: {}", e))?;
+    // Wait for all tasks to complete and collect results
+    let mut results: Vec<(usize, H256)> = join_all(tasks)
+        .await
+        .into_iter()
+        .collect::<Result<Vec<_>, _>>()?
+        .into_iter()
+        .collect::<Result<Vec<_>, _>>()?;
 
-    let tree = builder.lock().await.build().ok_or_else(|| anyhow!("Failed to build tree"))?;
-    Ok(tree)
+    // Sort results by segment index
+    results.sort_by_key(|(i, _)| *i);
+
+    // Build the Merkle tree
+    let mut builder = TreeBuilder::new();
+    for (_, hash) in results {
+        builder.append_hash(hash);
+    }
+
+    builder
+        .build()
+        .ok_or_else(|| anyhow!("Failed to build tree"))
 }
 
 pub fn num_splits(total: i64, unit: usize) -> u64 {
@@ -76,15 +95,23 @@ pub fn segment_root(chunks: &[u8]) -> H256 {
         }
     }
 
-    builder.build().map(|tree| tree.root()).unwrap_or(*EMPTY_CHUNK_HASH)
+    builder
+        .build()
+        .map(|tree| tree.root())
+        .unwrap_or(*EMPTY_CHUNK_HASH)
 }
 
-pub fn read_at(data: &dyn IterableData, read_size: usize, offset: i64, padded_size: u64) -> Result<Vec<u8>> {
+pub fn read_at(
+    data: &dyn IterableData,
+    read_size: usize,
+    offset: i64,
+    padded_size: u64,
+) -> Result<Vec<u8>> {
     if offset < 0 || offset as u64 >= padded_size {
-        return Err(anyhow!("invalid offset"));
+        return Err(anyhow!("Invalid offset: {}", offset));
     }
 
-    let max_available_length = padded_size - offset as u64;
+    let max_available_length = padded_size.saturating_sub(offset as u64);
     let expected_buf_size = std::cmp::min(max_available_length as usize, read_size);
 
     if offset >= data.size() {
@@ -92,7 +119,44 @@ pub fn read_at(data: &dyn IterableData, read_size: usize, offset: i64, padded_si
     }
 
     let mut buf = vec![0; expected_buf_size];
-    data.read(&mut buf, offset)?;
+    match data.read(&mut buf, offset) {
+        Ok(_) => Ok(buf),
+        Err(e) => {
+            if buf.is_empty() {
+                Ok(vec![]) // Return empty vector if no data could be read
+            } else {
+                Err(anyhow!("Error reading data: {}", e))
+            }
+        }
+    }
+}
 
-    Ok(buf)
+pub fn async_read_at(
+    data: Arc<dyn IterableData>,
+    read_size: usize,
+    offset: i64,
+    padded_size: u64,
+) -> Result<Vec<u8>> {
+    if offset < 0 || offset as u64 >= padded_size {
+        return Err(anyhow!("Invalid offset: {}", offset));
+    }
+
+    let max_available_length = padded_size.saturating_sub(offset as u64);
+    let expected_buf_size = std::cmp::min(max_available_length as usize, read_size);
+
+    if offset >= data.size() {
+        return Ok(vec![0; expected_buf_size]);
+    }
+
+    let mut buf = vec![0; expected_buf_size];
+    match data.read(&mut buf, offset) {
+        Ok(_) => Ok(buf),
+        Err(e) => {
+            if buf.is_empty() {
+                Ok(vec![]) // Return empty vector if no data could be read
+            } else {
+                Err(anyhow!("Error reading data: {}", e))
+            }
+        }
+    }
 }

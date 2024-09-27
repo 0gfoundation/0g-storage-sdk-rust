@@ -123,9 +123,15 @@ impl Contract {
                     return Ok(receipt);
                 }
                 None => {
-                    log::error!("Transaction not executed yet: {:?}", tx_hash);
+                    log::warn!("Transaction not executed yet: {:?}", tx_hash);
                 }
             }
         }
+    }
+
+    pub async fn get_nonce(&self) -> U256 {
+        let nonce = self.client.get_transaction_count(self.account, None).await.expect("Fail to get nonce");
+        log::info!("current nonce: {:?}", nonce);
+        nonce
     }
 }

@@ -1,4 +1,4 @@
-use crate::common::blockchain::rpc::{must_new_web3, new_web3};
+use crate::common::blockchain::rpc::must_new_web3;
 use crate::common::options::LogOption;
 use crate::common::utils::duration_from_str;
 use crate::core::file::File;
@@ -19,6 +19,7 @@ pub enum FinalityRequirement {
     WaitNothing = 2,       // 不等待任何操作
 }
 
+#[derive(Clone, Default)]
 pub struct UploadOption {
     pub tags: Vec<u8>,
     pub finality_required: FinalityRequirement,
@@ -31,22 +32,7 @@ pub struct UploadOption {
 
 impl Default for FinalityRequirement {
     fn default() -> Self {
-        FinalityRequirement::FileFinalized
-    }
-}
-
-// 为 UploadOption 实现 Default trait
-impl Default for UploadOption {
-    fn default() -> Self {
-        UploadOption {
-            tags: vec![],
-            finality_required: FinalityRequirement::default(),
-            task_size: 0,
-            expected_replica: 1,
-            skip_tx: false,
-            fee: None,
-            nonce: None,
-        }
+        FinalityRequirement::TransactionPacked
     }
 }
 
@@ -136,7 +122,7 @@ pub async fn run_upload(args: &UploadArgs) -> Result<()> {
         indexer_client.upload(file, &opt).await?;
     } else {
         let client = must_new_zgs_clients(&args.node);
-        let uploader = Uploader::new(web3_client, client, &LogOption {}).await?;
+        let uploader = Uploader::new(web3_client, client, &LogOption::default()).await?;
         uploader.upload(file, &opt).await?;
     }
     Ok(())

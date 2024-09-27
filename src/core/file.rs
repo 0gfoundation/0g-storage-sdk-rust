@@ -82,7 +82,7 @@ impl IterableData for File {
         file.seek(SeekFrom::Start(offset as u64))?;
         let n = file.read(buf)?;
         if n == 0 && offset < self.size() {
-            return Err(anyhow!("Unexpected EOF"));
+            return Err(anyhow!("Unexpected EOF, offset: {:?}, data_size: {:?}", offset, self.size()));
         }
         Ok(n)
     }

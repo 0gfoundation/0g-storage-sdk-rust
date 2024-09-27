@@ -1,9 +1,9 @@
 use anyhow::Result;
-use jsonrpsee::core::{client::ClientT, Error as JsonRpseeError, rpc_params};
+use jsonrpsee::core::{client::ClientT, Error as JsonRpseeError, rpc_params, RpcResult};
 use jsonrpsee::http_client::{HttpClient, HttpClientBuilder};
 use std::sync::Arc;
-use log::{debug, error, info};
-use super::types::{Status, FileInfo};
+use super::types::{FileInfo, SegmentWithProof, Status};
+use crate::common::shard::ShardConfig;
 
 
 #[derive(Debug, Clone)]
@@ -22,13 +22,21 @@ impl ZgsClient {
         })
     }
 
-    pub async fn get_status(&self) -> Result<Status, JsonRpseeError> {
+    pub async fn get_status(&self) -> RpcResult<Status> {
         self.client.request("zgs_getStatus", rpc_params![]).await
     }
 
-    pub async fn get_file_info(&self, root: [u8; 32]) -> Result<Option<FileInfo>, JsonRpseeError> {
-        let root = format!("0x{}", hex::encode(root));  // 转换为十六进制字符串
+    pub async fn get_file_info(&self, root: [u8; 32]) -> RpcResult<Option<FileInfo>> {
+        let root = format!("0x{}", hex::encode(root)); 
         self.client.request("zgs_getFileInfo", rpc_params![root]).await
+    }
+
+    pub async fn get_shard_config(&self) -> RpcResult<ShardConfig> {
+        self.client.request("zgs_getShardConfig", rpc_params![]).await
+    }
+
+    pub async fn upload_segments(&self, segments: &Vec<SegmentWithProof>) -> RpcResult<()> {
+        self.client.request("zgs_uploadSegments", rpc_params![segments]).await
     }
 }
 
@@ -55,6 +63,24 @@ mod tests {
             Err(e) => {
                 eprintln!("Error: {:?}", e);
                 panic!("Failed to get status: {:?}", e);
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn test_rpc_get_shard_config() {
+        env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("debug")).init();
+        let urls = vec![String::from("http://127.0.0.1:5678")];
+        let clients = must_new_zgs_clients(&urls);
+        let result = clients[0].get_shard_config().await;
+        // log::debug!("result: {:?}", result);
+        match result {
+            Ok(shard_config) => {
+                println!("Shard config: {:?}", shard_config);
+            }
+            Err(e) => {
+                eprintln!("Error: {:?}", e);
+                panic!("Failed to get shard config: {:?}", e);
             }
         }
     }

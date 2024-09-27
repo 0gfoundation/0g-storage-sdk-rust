@@ -3,7 +3,7 @@ use tiny_keccak::{Hasher, Keccak};
 use serde::{Serialize, Deserialize};
 use anyhow::{Result, anyhow};
 
-#[derive(Serialize, Deserialize)]
+#[derive(Serialize, Deserialize, Debug)]
 pub struct Proof {
     pub lemma: Vec<H256>,
     pub path: Vec<bool>,
