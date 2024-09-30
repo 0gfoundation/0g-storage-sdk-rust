@@ -49,6 +49,10 @@ pub fn must_new_zgs_clients(urls: &[String]) -> Vec<ZgsClient> {
 
 #[cfg(test)]
 mod tests {
+    use std::str::FromStr;
+
+    use ethers::types::H256;
+
     use super::*;
     #[tokio::test]
     async fn test_rpc_get_status() {
@@ -81,6 +85,25 @@ mod tests {
             Err(e) => {
                 eprintln!("Error: {:?}", e);
                 panic!("Failed to get shard config: {:?}", e);
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn test_rpc_get_file_info() {
+        env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("debug")).init();
+        let urls = vec![String::from("http://127.0.0.1:5678")];
+        let clients = must_new_zgs_clients(&urls);
+        let root = H256::from_str("0x089b1799d7152cb83e0e3dc5d58217f7b550f045c5588ca96aa943b632a4a402").unwrap();
+        let result = clients[0].get_file_info(root.to_fixed_bytes()).await;
+        // log::debug!("result: {:?}", result);
+        match result {
+            Ok(file_info) => {
+                println!("file info: {:?}", file_info);
+            }
+            Err(e) => {
+                eprintln!("Error: {:?}", e);
+                panic!("Failed to get file info: {:?}", e);
             }
         }
     }

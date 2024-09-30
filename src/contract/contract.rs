@@ -2,8 +2,7 @@ use anyhow::Error;
 use ethers::{
     prelude::*,
     providers::{Http, Provider},
-    signers::LocalWallet,
-    types::transaction::eip2718::TypedTransaction,
+    signers::LocalWallet
 };
 use std::ops::Deref;
 use std::sync::Arc;
@@ -45,10 +44,18 @@ impl FlowContract {
     }
 
     pub async fn submit(&self, submission: Submission, fee: U256, traction_opts: TransactionRequest) -> Result<TxHash, Error> {
-        let mut tx_builder = self.flow.submit(submission);
-        tx_builder.tx = TypedTransaction::Legacy(traction_opts);
+        let mut tx_builder = self.flow.submit(submission).legacy();
+        if let Some(from) = traction_opts.from {
+            tx_builder = tx_builder.from(from);
+        }
+        if let Some(gas_price) = traction_opts.gas_price {
+            tx_builder = tx_builder.gas_price(gas_price);
+        }
+        if let Some(gas_limit) = traction_opts.gas {
+            tx_builder = tx_builder.gas(gas_limit);
+        }
         tx_builder = tx_builder.value(fee);
-        log::info!("tx builder: {:?}", tx_builder);
+        log::debug!("tx builder: {:?}", tx_builder);
         let pending_tx = tx_builder.send().await?;
         Ok(pending_tx.tx_hash())
     }
@@ -59,10 +66,18 @@ impl FlowContract {
         total_fee: U256,
         traction_opts: TransactionRequest
     ) -> Result<TxHash, Error> {
-        let mut tx_builder = self.flow.batch_submit(submissions);
-        tx_builder.tx = TypedTransaction::Legacy(traction_opts);
+        let mut tx_builder = self.flow.batch_submit(submissions).legacy();;
+        if let Some(from) = traction_opts.from {
+            tx_builder = tx_builder.from(from);
+        }
+        if let Some(gas_price) = traction_opts.gas_price {
+            tx_builder = tx_builder.gas_price(gas_price);
+        }
+        if let Some(gas_limit) = traction_opts.gas {
+            tx_builder = tx_builder.gas(gas_limit);
+        }
         tx_builder = tx_builder.value(total_fee);
-        log::info!("tx builder: {:?}", tx_builder);
+        log::debug!("tx builder: {:?}", tx_builder);
         let pending_tx = tx_builder.send().await?;
 
         Ok(pending_tx.tx_hash())

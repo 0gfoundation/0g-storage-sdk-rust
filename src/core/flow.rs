@@ -1,12 +1,13 @@
 use super::dataflow::{
-    read_at, async_read_at, segment_root, IterableData, DEFAULT_CHUNK_SIZE, DEFAULT_SEGMENT_MAX_CHUNKS,
+    async_read_at, read_at, segment_root, IterableData, DEFAULT_CHUNK_SIZE,
+    DEFAULT_SEGMENT_MAX_CHUNKS,
 };
 use super::merkle::tree_builder::TreeBuilder;
 use crate::contract::flow::{Submission, SubmissionNode};
 use anyhow::{anyhow, Result};
 use ethers::types::{Bytes, H256, U256};
+use futures::future::{join_all, try_join_all};
 use log::debug;
-use futures::future::join_all;
 use std::borrow::Borrow;
 use std::sync::Arc;
 
@@ -64,7 +65,8 @@ impl Flow {
             offset,
             DEFAULT_CHUNK_SIZE as i64 * batch,
             DEFAULT_CHUNK_SIZE as i64 * chunks,
-        ).await
+        )
+        .await
     }
 
     pub async fn create_segment_node(
@@ -78,7 +80,7 @@ impl Flow {
         let tasks: Vec<_> = (0..num_segments)
             .map(|i| {
                 let data = Arc::clone(&self.data);
-                tokio::task::spawn(async move {
+                async move {
                     let segment_offset = offset + i * batch;
                     let segment_size = batch.min(size - i * batch);
 
@@ -95,27 +97,21 @@ impl Flow {
                         segment_size as usize,
                         segment_offset,
                         data.padded_size(),
-                    )?;
+                    )
+                    .await?;
 
                     let hash = segment_root(&buf);
-                    Ok::<_, anyhow::Error>((i, hash))
-                })
+                    Ok::<_, anyhow::Error>(hash)
+                }
             })
             .collect();
 
-        // Wait for all tasks to complete and collect results
-        let mut results: Vec<(i64, H256)> = join_all(tasks)
-            .await
-            .into_iter()
-            .collect::<Result<Vec<_>, _>>()?
-            .into_iter()
-            .collect::<Result<Vec<_>, _>>()?;
-        // Sort results by segment index
-        results.sort_by_key(|(i, _)| *i);
+        // Use join_all to concurrently process all segments
+        let hashes = try_join_all(tasks).await?;
 
         // Build the Merkle tree
         let mut builder = TreeBuilder::new();
-        for (_, hash) in results {
+        for hash in hashes {
             builder.append_hash(hash);
         }
 

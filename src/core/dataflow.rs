@@ -1,9 +1,9 @@
 use super::iterator::Iterator as CustomIterator;
 use super::merkle::tree::Tree;
 use super::merkle::tree_builder::TreeBuilder;
-use anyhow::{anyhow, Result};
+use anyhow::{anyhow, Context, Result};
 use ethers::types::H256;
-use futures::future::join_all;
+use futures::future::{join_all, try_join_all};
 use lazy_static::lazy_static;
 use std::sync::Arc;
 use tiny_keccak::{Hasher, Keccak};
@@ -34,38 +34,41 @@ pub trait IterableData: Send + Sync {
 
 pub async fn merkle_tree(data: Arc<dyn IterableData>) -> Result<Tree> {
     let num_segments = num_segments_padded(data.as_ref());
+    log::debug!("data_size_origin: {:?}", data.size());
+    log::debug!("num_segments_padded: {:?}", num_segments);
+    log::debug!("data_size_padded: {:?}", data.padded_size());
 
-    let tasks: Vec<_> = (0..num_segments)
-        .map(|i| {
-            let data = Arc::clone(&data);
-            tokio::spawn(async move {
-                let offset = i as i64 * DEFAULT_SEGMENT_SIZE as i64;
-                let result = read_at(
-                    data.as_ref(),
-                    DEFAULT_SEGMENT_SIZE,
-                    offset,
-                    data.padded_size(),
-                )
-                .map(|buf| segment_root(&buf))?;
-                Ok::<_, anyhow::Error>((i, result))
-            })
-        })
-        .collect();
+    let segment_tasks = (0..num_segments).map(|i| {
+        let data = Arc::clone(&data);
+        async move {
+            let offset = i as i64 * DEFAULT_SEGMENT_SIZE as i64;
+            let remaining_size = data.padded_size().saturating_sub(offset as u64) as usize;
+            let segment_size = std::cmp::min(DEFAULT_SEGMENT_SIZE, remaining_size) as usize;
+            
+            let buf = async_read_at(data.clone(), segment_size, offset, data.padded_size())
+                .await
+                .context("context")?;
 
-    // Wait for all tasks to complete and collect results
-    let mut results: Vec<(usize, H256)> = join_all(tasks)
+            let hash = segment_root(&buf);
+
+            log::debug!(
+                "Processing segment {}: offset = {}, size = {}, root = {:?}",
+                i,
+                offset,
+                segment_size,
+                hash
+            );
+
+            Ok::<H256, anyhow::Error>(hash)
+        }
+    });
+
+    let hashes = try_join_all(segment_tasks)
         .await
-        .into_iter()
-        .collect::<Result<Vec<_>, _>>()?
-        .into_iter()
-        .collect::<Result<Vec<_>, _>>()?;
+        .context("Failed to process one or more segments")?;
 
-    // Sort results by segment index
-    results.sort_by_key(|(i, _)| *i);
-
-    // Build the Merkle tree
     let mut builder = TreeBuilder::new();
-    for (_, hash) in results {
+    for hash in hashes {
         builder.append_hash(hash);
     }
 
@@ -131,7 +134,7 @@ pub fn read_at(
     }
 }
 
-pub fn async_read_at(
+pub async fn async_read_at(
     data: Arc<dyn IterableData>,
     read_size: usize,
     offset: i64,
@@ -158,5 +161,20 @@ pub fn async_read_at(
                 Err(anyhow!("Error reading data: {}", e))
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::core::file::File;
+    use std::path::Path;
+
+    #[tokio::test]
+    async fn test_file_merkle_tree() {
+        env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("info")).init();
+        let data = File::open(Path::new("tmp123456")).unwrap();
+        let tree = merkle_tree(Arc::new(data)).await.unwrap();
+        log::info!("file root: {:?}", tree.root());
     }
 }

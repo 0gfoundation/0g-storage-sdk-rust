@@ -6,8 +6,7 @@ use crate::contract::contract::FlowContract;
 use crate::contract::flow::Submission;
 use crate::contract::market::Market;
 use crate::core::dataflow::{
-    merkle_tree, read_at, segment_root, IterableData, DEFAULT_CHUNK_SIZE,
-    DEFAULT_SEGMENT_MAX_CHUNKS, DEFAULT_SEGMENT_SIZE,
+    async_read_at, merkle_tree, read_at, segment_root, IterableData, DEFAULT_CHUNK_SIZE, DEFAULT_SEGMENT_MAX_CHUNKS, DEFAULT_SEGMENT_SIZE
 };
 use crate::core::flow::Flow;
 use crate::core::merkle::tree::Tree;
@@ -34,7 +33,7 @@ pub struct Uploader {
     pub market: Market<SignerMiddleware<Provider<Http>, LocalWallet>>,
 }
 
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 pub struct UploadTask {
     pub client_index: usize,
     pub seg_index: u64,
@@ -109,7 +108,7 @@ impl Uploader {
         let mut root_bytes = [0u8; 32];
         root_bytes.copy_from_slice(root.as_bytes());
         let exist = self.check_log_existence(root_bytes).await?;
-        let tx_hash = if !opt.skip_tx & !exist {
+        let tx_hash = if !opt.skip_tx | !exist {
             log::info!(
                 "Data[{:?}] to be uploaded not exist and not skip, uploading...",
                 root
@@ -123,7 +122,7 @@ impl Uploader {
                     opt.fee,
                 )
                 .await?;
-
+            log::info!("Tx[{:?}] receipt: {:?}", tx_hash, receipt);
             if data.size() <= SMALL_FILE_SIZE_THRESHOLD {
                 log::info!("Upload small data immediately");
             } else if opt.finality_required <= FinalityRequirement::TransactionPacked {
@@ -133,7 +132,7 @@ impl Uploader {
 
             tx_hash
         } else {
-            log::info!("Data have been uploaded or skiped");
+            log::info!("Data[{:?}] have been uploaded or skiped", root);
             H256::zero()
         };
 
@@ -172,7 +171,7 @@ impl Uploader {
             .context("Failed to create submissions")?;
 
         let price_per_sector = self.market.price_per_sector().call().await?;
-        log::info!("Price per sector: {:?}", price_per_sector);
+        log::debug!("Price per sector: {:?}", price_per_sector);
 
         let mut opts: TransactionRequest = self.flow.create_transact_opts().await;
         if let Some(nonce_value) = nonce {
@@ -216,59 +215,57 @@ impl Uploader {
         finality_required: FinalityRequirement,
         receipt: Option<TransactionReceipt>,
     ) -> Result<()> {
-        if matches!(finality_required, FinalityRequirement::WaitNothing) {
+        if finality_required == FinalityRequirement::WaitNothing {
             return Ok(());
         }
 
         log::info!(
             "Wait for log entry on storage node: root={:?}, finality={:?}",
-            root,
-            finality_required
+            root, finality_required
         );
 
-        let root_bytes = root.to_fixed_bytes();
-
         loop {
-            time::sleep(Duration::from_secs(1)).await;
+            tokio::time::sleep(Duration::from_secs(1)).await;
 
-            let check_results = join_all(self.clients.iter().map(|client| async {
-                match client.get_file_info(root_bytes).await {
+            let mut ok = true;
+            for client in &self.clients {
+                match client.get_file_info(root.to_fixed_bytes()).await {
                     Ok(Some(info)) => {
-                        if matches!(finality_required, FinalityRequirement::FileFinalized) 
-                           && !info.finalized {
-                            log::warn!(
-                                "Log entry is available, but not finalized yet: cached={}, uploadedSegments={}",
-                                info.is_cached,
-                                info.uploaded_seg_num
+                        if finality_required <= FinalityRequirement::FileFinalized
+                            && !info.finalized
+                        {
+                            log::info!(
+                                "Log entry is available, but not finalized yet: cached={}, uploaded_segments={}",
+                                info.is_cached, info.uploaded_seg_num
                             );
-                            false
-                        } else {
-                            true
+                            ok = false;
+                            break;
                         }
-                    },
+                    }
                     Ok(None) => {
-                        if let Some(receipt) = &receipt {
+                        if let Some(ref receipt) = receipt {
                             if let Ok(status) = client.get_status().await {
-                                log::warn!(
-                                    "Log entry is unavailable yet: txBlockNumber={:?}, zgsNodeSyncHeight={}",
-                                    receipt.block_number,
-                                    status.log_sync_height
+                                log::info!(
+                                    "Log entry is unavailable yet: tx_block_number={:?}, zgs_node_sync_height={}",
+                                    receipt.block_number, status.log_sync_height
                                 );
                             }
+                        } else {
+                            log::info!("Log entry is unavailable yet");
                         }
-                        false
-                    },
-                    Err(e) => {
-                        log::warn!("Failed to get file info from client: {}", e);
-                        false
+                        ok = false;
+                        break;
                     }
+                    Err(e) => anyhow::bail!("Failed to get file info: {}", e),
                 }
-            })).await;
+            }
 
-            if check_results.into_iter().all(|result| result) {
-                return Ok(());
+            if ok {
+                break;
             }
         }
+
+        Ok(())
     }
 
     pub async fn new_segment_uploader(
@@ -310,7 +307,6 @@ impl Uploader {
                         num_shard: shard_config.num_shard,
                     })
                     .collect::<Vec<UploadTask>>();
-    
                 Ok::<Vec<UploadTask>, anyhow::Error>(tasks)
             }
         })).await?;
@@ -353,45 +349,20 @@ impl Uploader {
 
         let tasks = (0..segment_uploader.tasks.len()).map(|task_index| {
             let segment_uploader = segment_uploader.clone();
-            tokio::spawn(async move {
+            async move {
                 segment_uploader.do_task(task_index)
                     .await
-            })
+                    .with_context(|| format!("Task {} failed", task_index))
+            }
         });
 
-        let results = join_all(tasks).await;
-
-        let mut success_count = 0;
-        let mut failure_count = 0;
-
-        for (index, task_result) in results.into_iter().enumerate() {
-            match task_result {
-                Ok(Ok(_)) => {
-                    success_count += 1;
-                    log::debug!("Task {} completed successfully", index);
-                }
-                Ok(Err(e)) => {
-                    failure_count += 1;
-                    log::error!("Task {} failed: {}", index, e);
-                }
-                Err(e) => {
-                    failure_count += 1;
-                    log::error!("Task {} panicked: {}", index, e);
-                }
-            }
-        }
+        let results = try_join_all(tasks).await?;
 
         log::info!(
-            "File upload completed: segNum={}, total tasks={}, successful={}, failed={}",
+            "File upload completed: segNum={}, total tasks={}",
             segment_uploader.data.num_segments(),
-            segment_uploader.tasks.len(),
-            success_count,
-            failure_count
+            results.len()
         );
-
-        if failure_count > 0 {
-            anyhow::bail!("{} out of {} tasks failed during file upload", failure_count, segment_uploader.tasks.len());
-        }
 
         Ok(())
     }
@@ -424,6 +395,7 @@ impl SegmentUploader {
         let num_chunks = self.data.num_chunks();
         let num_segments = self.data.num_segments();
         let mut seg_index = upload_task.seg_index;
+        // log::info!("seg_index: {:?}", seg_index);
         let start_seg_index = seg_index;
         let mut segments = Vec::new();
 
@@ -433,12 +405,12 @@ impl SegmentUploader {
                 break;
             }
 
-            let segment = read_at(
-                self.data.as_ref(),
+            let segment = async_read_at(
+                self.data.clone(),
                 DEFAULT_SEGMENT_SIZE as usize,
                 (seg_index as usize * DEFAULT_SEGMENT_SIZE) as i64,
                 self.data.padded_size(),
-            )?;
+            ).await?;
 
             if start_index + (segment.len() / DEFAULT_CHUNK_SIZE) >= num_chunks as usize {
                 let expected_len = DEFAULT_CHUNK_SIZE * (num_chunks as usize - start_index);
@@ -462,17 +434,27 @@ impl SegmentUploader {
 
             seg_index += upload_task.num_shard;
         }
-
-        match self.clients[upload_task.client_index]
-            .upload_segments(&segments)
-            .await
+        
+        // #[cfg(not(test))]
         {
-            Ok(_) => {}
-            Err(e) if !is_duplicate_error(&e.to_string()) => return Err(e.into()),
-            _ => {}
+            match self.clients[upload_task.client_index]
+                .upload_segments(&segments)
+                .await
+            {
+                Ok(_) => {}
+                Err(e) if !is_duplicate_error(&e.to_string()) => return Err(e.into()),
+                _ => {}
+            }
         }
 
-        log::debug!(
+        // #[cfg(test)]
+        // {
+        //     for segment in &segments {
+        //         log::info!("root: {:?}, index: {:?}, proof: {:?}", segment.root, segment.index, segment.proof);
+        //     }
+        // }
+
+        log::info!(
             "Segments uploaded: total={}, from_seg_index={}, to_seg_index={}, step={}, root={:?}",
             num_segments,
             start_seg_index,
@@ -543,10 +525,10 @@ mod tests {
         let uploader = Uploader::new(web3_client, clients, &LogOption::default())
             .await
             .unwrap();
-        let root = uploader
+        let tx_hash = uploader
             .upload(Arc::new(data), &UploadOption::default())
             .await
             .unwrap();
-        println!("uploaded data root: {:?}", root);
+        println!("uploaded data tx hash: {:?}", tx_hash);
     }
 }

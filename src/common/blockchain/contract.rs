@@ -91,8 +91,7 @@ impl Contract {
 
     pub async fn create_transact_opts(&self) -> TransactionRequest {
         let mut tx = TransactionRequest::new()
-            .from(self.account)
-            .chain_id(self.client.get_chainid().await.unwrap_or_default().as_u64());
+            .from(self.account);
         // let chain_id = self.client.get_chainid().await.unwrap_or_default();
         if let Some(gas_price) = CUSTOM_GAS_PRICE {
             tx = tx.gas_price(gas_price);
@@ -123,7 +122,7 @@ impl Contract {
                     return Ok(receipt);
                 }
                 None => {
-                    log::warn!("Transaction not executed yet: {:?}", tx_hash);
+                    log::info!("Transaction not executed yet: {:?}", tx_hash);
                 }
             }
         }
