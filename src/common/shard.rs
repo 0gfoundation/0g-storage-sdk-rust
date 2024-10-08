@@ -2,7 +2,6 @@ use rand::rngs::StdRng;
 use rand::seq::SliceRandom;
 use rand::SeedableRng;
 use serde::{Deserialize, Serialize};
-use std::{cell::RefCell, rc::Rc};
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
@@ -32,12 +31,20 @@ impl ShardConfig {
     }
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq, Default)]
+#[serde(rename_all = "camelCase")]
 pub struct ShardedNode {
-    url: String,
-    config: ShardConfig,
-    latency: i64,
-    since: i64,
+    pub url: String,
+    pub config: ShardConfig,
+    pub latency: i64,
+    pub since: i64,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct ShardedNodes {
+    pub trusted: Option<Vec<ShardedNode>>,   
+    pub discovered: Option<Vec<ShardedNode>>, 
 }
 
 struct ShardSegmentTreeNode {

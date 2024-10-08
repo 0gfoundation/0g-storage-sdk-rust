@@ -1,43 +1,81 @@
 use anyhow::Result;
-use jsonrpsee::core::{client::ClientT, Error as JsonRpseeError, rpc_params, RpcResult};
-use jsonrpsee::http_client::{HttpClient, HttpClientBuilder};
-use std::sync::Arc;
-use super::types::{FileInfo, SegmentWithProof, Status};
-use crate::common::shard::ShardConfig;
+use std::ops::Deref;
 
+use super::types::{FileInfo, SegmentWithProof, Status};
+use crate::common::options::LogOption;
+use crate::common::rpc::{client::{validate_url, RpcClient}, error::{RpcError, ZgRpcResult}};
+use crate::common::shard::ShardConfig;
 
 #[derive(Debug, Clone)]
 pub struct ZgsClient {
-    pub client: Arc<HttpClient>,
-    pub url: String,
+    pub client: RpcClient,
+    pub option: LogOption,
 }
 
+impl Deref for ZgsClient {
+    type Target = RpcClient;
+
+    fn deref(&self) -> &Self::Target {
+        &self.client
+    }
+}
 
 impl ZgsClient {
-    pub fn new(url: &str) -> Result<Self, JsonRpseeError> {
-        let client = HttpClientBuilder::default().build(url)?;
-        Ok(Self {
-            client: Arc::new(client),
-            url: url.to_string(),
-        })
+    pub fn new(url: &str) -> Result<Self> {
+        let url = validate_url(url)?;
+        let client = RpcClient::new(&url)?;
+        let option = LogOption::default();
+        Ok(Self { client, option })
     }
 
-    pub async fn get_status(&self) -> RpcResult<Status> {
-        self.client.request("zgs_getStatus", rpc_params![]).await
+    pub async fn get_status(&self) -> ZgRpcResult<Status> {
+        self.client
+            .request_no_params("zgs_getStatus")
+            .await
+            .map_err(|e| RpcError {
+                message: e.to_string(),
+                method: "zgs_getStatus".to_string(),
+                url: self.url.clone(),
+            })
     }
 
-    pub async fn get_file_info(&self, root: [u8; 32]) -> RpcResult<Option<FileInfo>> {
-        let root = format!("0x{}", hex::encode(root)); 
-        self.client.request("zgs_getFileInfo", rpc_params![root]).await
+    pub async fn get_file_info(&self, root: [u8; 32]) -> ZgRpcResult<Option<FileInfo>> {
+        let root = format!("0x{}", hex::encode(root));
+        self.client
+            .request("zgs_getFileInfo", root)
+            .await
+            .map_err(|e| RpcError {
+                message: e.to_string(),
+                method: "zgs_getFileInfo".to_string(),
+                url: self.url.clone(),
+            })
     }
 
-    pub async fn get_shard_config(&self) -> RpcResult<ShardConfig> {
-        self.client.request("zgs_getShardConfig", rpc_params![]).await
+    pub async fn get_shard_config(&self) -> ZgRpcResult<ShardConfig> {
+        self.client
+            .request_no_params("zgs_getShardConfig")
+            .await
+            .map_err(|e| RpcError {
+                message: e.to_string(),
+                method: "zgs_getShardConfig".to_string(),
+                url: self.url.clone(),
+            })
     }
 
-    pub async fn upload_segments(&self, segments: &Vec<SegmentWithProof>) -> RpcResult<()> {
-        self.client.request("zgs_uploadSegments", rpc_params![segments]).await
+    pub async fn upload_segments(&self, segments: &Vec<SegmentWithProof>) -> ZgRpcResult<()> {
+        self.client
+            .request("zgs_uploadSegments", segments)
+            .await
+            .map_err(|e| RpcError {
+                message: e.to_string(),
+                method: "zgs_uploadSegments".to_string(),
+                url: self.url.clone(),
+            })
     }
+}
+
+pub fn must_new_zgs_client(url: &String) -> ZgsClient {
+    ZgsClient::new(&url).expect("Failed to create ZGS client")
 }
 
 pub fn must_new_zgs_clients(urls: &[String]) -> Vec<ZgsClient> {
@@ -46,52 +84,45 @@ pub fn must_new_zgs_clients(urls: &[String]) -> Vec<ZgsClient> {
         .collect()
 }
 
-
 #[cfg(test)]
 mod tests {
+    use super::*;
     use std::str::FromStr;
-
     use ethers::types::H256;
 
-    use super::*;
     #[tokio::test]
     async fn test_rpc_get_status() {
         let urls = vec![String::from("http://127.0.0.1:5678")];
         let clients = must_new_zgs_clients(&urls);
         let result = clients[0].get_status().await;
-        
+
         match result {
             Ok(status) => {
                 println!("Status: {:?}", status);
             }
             Err(e) => {
-                eprintln!("Error: {:?}", e);
-                panic!("Failed to get status: {:?}", e);
+                eprintln!("Failed to get status: {:?}", e);
             }
         }
     }
 
     #[tokio::test]
     async fn test_rpc_get_shard_config() {
-        env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("debug")).init();
         let urls = vec![String::from("http://127.0.0.1:5678")];
         let clients = must_new_zgs_clients(&urls);
         let result = clients[0].get_shard_config().await;
-        // log::debug!("result: {:?}", result);
         match result {
             Ok(shard_config) => {
                 println!("Shard config: {:?}", shard_config);
             }
             Err(e) => {
-                eprintln!("Error: {:?}", e);
-                panic!("Failed to get shard config: {:?}", e);
+                eprintln!("Failed to get shard config: {:?}", e);
             }
         }
     }
 
     #[tokio::test]
     async fn test_rpc_get_file_info() {
-        env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("debug")).init();
         let urls = vec![String::from("http://127.0.0.1:5678")];
         let clients = must_new_zgs_clients(&urls);
         let root = H256::from_str("0x089b1799d7152cb83e0e3dc5d58217f7b550f045c5588ca96aa943b632a4a402").unwrap();

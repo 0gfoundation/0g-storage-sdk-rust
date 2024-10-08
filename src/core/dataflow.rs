@@ -172,7 +172,6 @@ mod tests {
 
     #[tokio::test]
     async fn test_file_merkle_tree() {
-        env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("info")).init();
         let data = File::open(Path::new("tmp123456")).unwrap();
         let tree = merkle_tree(Arc::new(data)).await.unwrap();
         log::info!("file root: {:?}", tree.root());

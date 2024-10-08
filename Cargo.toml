@@ -23,3 +23,7 @@ tempfile = "3.3"
 rand = "0.8.5"
 ctor = "0.1.21"
 base64 = "0.13.0"
+url = '2.2'
+
+[patch.crates-io]
+# jsonrpsee = { path = "../jsonrpsee-0.14.0/jsonrpsee",  features = ["http-client"]}

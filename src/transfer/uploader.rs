@@ -6,7 +6,8 @@ use crate::contract::contract::FlowContract;
 use crate::contract::flow::Submission;
 use crate::contract::market::Market;
 use crate::core::dataflow::{
-    async_read_at, merkle_tree, read_at, segment_root, IterableData, DEFAULT_CHUNK_SIZE, DEFAULT_SEGMENT_MAX_CHUNKS, DEFAULT_SEGMENT_SIZE
+    async_read_at, merkle_tree, segment_root, IterableData, DEFAULT_CHUNK_SIZE,
+    DEFAULT_SEGMENT_MAX_CHUNKS, DEFAULT_SEGMENT_SIZE,
 };
 use crate::core::flow::Flow;
 use crate::core::merkle::tree::Tree;
@@ -49,16 +50,17 @@ pub struct SegmentUploader {
     pub task_size: u32,
 }
 
+pub type Web3Client = Arc<SignerMiddleware<Provider<Http>, LocalWallet>>;
 impl Uploader {
     pub async fn new(
         web3_client: Arc<SignerMiddleware<Provider<Http>, LocalWallet>>,
         clients: Vec<ZgsClient>,
         log_opt: &LogOption,
     ) -> Result<Self> {
-        env_logger::Builder::from_env(
-            env_logger::Env::default().default_filter_or(log_opt.level.as_str()),
-        )
-        .init();
+        // env_logger::Builder::from_env(
+        //     env_logger::Env::default().default_filter_or(log_opt.level.as_str()),
+        // )
+        // .init();
         if clients.is_empty() {
             anyhow::bail!("Storage node not specified");
         }
@@ -126,7 +128,8 @@ impl Uploader {
             if data.size() <= SMALL_FILE_SIZE_THRESHOLD {
                 log::info!("Upload small data immediately");
             } else if opt.finality_required <= FinalityRequirement::TransactionPacked {
-                let _ = self.wait_for_log_entry(root, FinalityRequirement::TransactionPacked, receipt)
+                let _ = self
+                    .wait_for_log_entry(root, FinalityRequirement::TransactionPacked, receipt)
                     .await;
             }
 
@@ -138,7 +141,8 @@ impl Uploader {
 
         self.upload_file(data, tree, opt.expected_replica, opt.task_size)
             .await?;
-        let _ = self.wait_for_log_entry(root, opt.finality_required, None)
+        let _ = self
+            .wait_for_log_entry(root, opt.finality_required, None)
             .await;
 
         log::info!("Upload completed in {:?}", start_time.elapsed());
@@ -221,7 +225,8 @@ impl Uploader {
 
         log::info!(
             "Wait for log entry on storage node: root={:?}, finality={:?}",
-            root, finality_required
+            root,
+            finality_required
         );
 
         loop {
@@ -277,48 +282,54 @@ impl Uploader {
     ) -> Result<SegmentUploader> {
         let num_segments = data.num_segments();
         let shard_configs = get_shard_configs(&self.clients).await?;
-    
+
         if !check_replica(&shard_configs, expected_replica) {
             anyhow::bail!("Selected nodes cannot cover all shards");
         }
-    
+
         let root_bytes = tree.root().to_fixed_bytes();
-    
-        let client_tasks = try_join_all(self.clients.iter().enumerate().map(|(client_index, client)| {
-            // 克隆需要在闭包中使用的值
-            let shard_config = shard_configs[client_index].clone();
-            // let client = client.clone();
-    
-            async move {
-                let info = client.get_file_info(root_bytes).await
-                    .context("Failed to get file info")?;
-    
-                if let Some(info) = info {
-                    if info.finalized {
-                        return Ok::<Vec<UploadTask>, anyhow::Error>(Vec::new());
+
+        let client_tasks = try_join_all(self.clients.iter().enumerate().map(
+            |(client_index, client)| {
+                // 克隆需要在闭包中使用的值
+                let shard_config = shard_configs[client_index].clone();
+                // let client = client.clone();
+
+                async move {
+                    let info = client
+                        .get_file_info(root_bytes)
+                        .await
+                        .context("Failed to get file info")?;
+
+                    if let Some(info) = info {
+                        if info.finalized {
+                            return Ok::<Vec<UploadTask>, anyhow::Error>(Vec::new());
+                        }
                     }
+
+                    let tasks = (shard_config.shard_id..num_segments)
+                        .step_by(shard_config.num_shard as usize * task_size as usize)
+                        .map(|seg_index| UploadTask {
+                            client_index,
+                            seg_index,
+                            num_shard: shard_config.num_shard,
+                        })
+                        .collect::<Vec<UploadTask>>();
+                    Ok::<Vec<UploadTask>, anyhow::Error>(tasks)
                 }
-    
-                let tasks = (shard_config.shard_id..num_segments)
-                    .step_by(shard_config.num_shard as usize * task_size as usize)
-                    .map(|seg_index| UploadTask {
-                        client_index,
-                        seg_index,
-                        num_shard: shard_config.num_shard,
-                    })
-                    .collect::<Vec<UploadTask>>();
-                Ok::<Vec<UploadTask>, anyhow::Error>(tasks)
-            }
-        })).await?;
-    
-        let mut client_tasks: Vec<Vec<UploadTask>> = client_tasks.into_iter()
+            },
+        ))
+        .await?;
+
+        let mut client_tasks: Vec<Vec<UploadTask>> = client_tasks
+            .into_iter()
             .filter(|tasks| !tasks.is_empty())
             .collect();
-    
+
         client_tasks.sort_by_key(|tasks| std::cmp::Reverse(tasks.len()));
-    
+
         let tasks: Vec<UploadTask> = client_tasks.into_iter().flatten().collect();
-    
+
         Ok(SegmentUploader {
             data,
             tree,
@@ -350,7 +361,8 @@ impl Uploader {
         let tasks = (0..segment_uploader.tasks.len()).map(|task_index| {
             let segment_uploader = segment_uploader.clone();
             async move {
-                segment_uploader.do_task(task_index)
+                segment_uploader
+                    .do_task(task_index)
                     .await
                     .with_context(|| format!("Task {} failed", task_index))
             }
@@ -410,7 +422,8 @@ impl SegmentUploader {
                 DEFAULT_SEGMENT_SIZE as usize,
                 (seg_index as usize * DEFAULT_SEGMENT_SIZE) as i64,
                 self.data.padded_size(),
-            ).await?;
+            )
+            .await?;
 
             if start_index + (segment.len() / DEFAULT_CHUNK_SIZE) >= num_chunks as usize {
                 let expected_len = DEFAULT_CHUNK_SIZE * (num_chunks as usize - start_index);
@@ -434,8 +447,8 @@ impl SegmentUploader {
 
             seg_index += upload_task.num_shard;
         }
-        
-        // #[cfg(not(test))]
+
+        #[cfg(not(test))]
         {
             match self.clients[upload_task.client_index]
                 .upload_segments(&segments)
@@ -447,12 +460,17 @@ impl SegmentUploader {
             }
         }
 
-        // #[cfg(test)]
-        // {
-        //     for segment in &segments {
-        //         log::info!("root: {:?}, index: {:?}, proof: {:?}", segment.root, segment.index, segment.proof);
-        //     }
-        // }
+        #[cfg(test)]
+        {
+            for segment in &segments {
+                log::info!(
+                    "root: {:?}, index: {:?}, proof: {:?}",
+                    segment.root,
+                    segment.index,
+                    segment.proof
+                );
+            }
+        }
 
         log::info!(
             "Segments uploaded: total={}, from_seg_index={}, to_seg_index={}, step={}, root={:?}",

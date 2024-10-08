@@ -1,10 +1,9 @@
-use anyhow::{anyhow, Result};
+use anyhow::Result;
 use ethers::{
     prelude::*,
     providers::{Http, Middleware, Provider},
     signers::{LocalWallet, Signer},
 };
-use log::{debug, error, info};
 use std::sync::Arc;
 
 pub static mut WEB3_LOG_ENABLED: bool = false;
@@ -16,7 +15,7 @@ pub async fn must_new_web3(
     match new_web3(url, key).await {
         Ok(client) => client,
         Err(e) => {
-            error!("Failed to connect to fullnode at {}: {}", url, e);
+            log::error!("Failed to connect to fullnode at {}: {}", url, e);
             panic!("Failed to connect to fullnode");
         }
     }
@@ -33,34 +32,6 @@ pub async fn new_web3(
     let client = client.with_signer(wallet);
     Ok(Arc::new(client))
 }
-
-// pub async fn wait_for_receipt<M>(
-//     client: Arc<M>,
-//     tx_hash: H256,
-//     success_required: bool,
-//     opt: &RetryOption,
-// ) -> Result<TransactionReceipt>
-// where
-//     M: Middleware + 'static,
-//     M::Error: 'static,
-// {
-//     let mut interval = time::interval(opt.interval);
-
-//     loop {
-//         interval.tick().await;
-//         match client.get_transaction_receipt(tx_hash).await? {
-//             Some(receipt) => {
-//                 if success_required && receipt.status.unwrap_or_default().is_zero() {
-//                     return Err(anyhow!("Transaction execution failed"));
-//                 }
-//                 return Ok(receipt);
-//             }
-//             None => {
-//                 error!("Transaction not executed yet: {:?}", tx_hash);
-//             }
-//         }
-//     }
-// }
 
 pub fn default_signer(
     client: &SignerMiddleware<Provider<Http>, LocalWallet>,

@@ -2,7 +2,7 @@ use crate::common::blockchain::rpc::must_new_web3;
 use crate::common::options::LogOption;
 use crate::common::utils::duration_from_str;
 use crate::core::file::File;
-use crate::indexer::client::{IndexerClient, IndexerClientOption};
+use crate::indexer::client::{IndexerClient};
 use crate::node::client_zgs::{must_new_zgs_clients, ZgsClient};
 use crate::transfer::uploader::Uploader;
 use anyhow::Result;
@@ -118,8 +118,8 @@ pub async fn run_upload(args: &UploadArgs) -> Result<()> {
     let web3_client = must_new_web3(&args.url, &args.key).await;
 
     if let Some(indexer_url) = &args.indexer {
-        let indexer_client = IndexerClient::new(indexer_url, &IndexerClientOption {})?;
-        indexer_client.upload(file, &opt).await?;
+        let indexer_client = IndexerClient::new(indexer_url)?;
+        indexer_client.upload(web3_client, file, &opt).await?;
     } else {
         let client = must_new_zgs_clients(&args.node);
         let uploader = Uploader::new(web3_client, client, &LogOption::default()).await?;
