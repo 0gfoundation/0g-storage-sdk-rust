@@ -1,5 +1,8 @@
 use clap::{Parser, Subcommand};
 use super::upload::UploadArgs;
+use super::download::DownloadArgs;
+use super::generate_file::GenerateArgs;
+use super::indexer::IndexerArgs;
 
 #[derive(Parser)]
 #[command(author, version, about = "ZeroGStorage client to interact with ZeroGStorage network")]
@@ -46,18 +49,18 @@ pub enum Commands {
         blockchain: String,
     },
     #[command(about = "Download file from ZeroGStorage network")]
-    Download,
+    Download(DownloadArgs),
     #[command(about = "Start gateway service")]
     Gateway,
     #[command(about = "Generate a temp file for test purpose")]
-    Gen,
+    Gen(GenerateArgs),
     #[command(about = "Help about any command")]
     Help {
         #[arg(value_name = "COMMAND")]
         command: Option<String>,
     },
     #[command(about = "Start indexer service")]
-    Indexer,
+    Indexer(IndexerArgs),
     #[command(about = "read kv streams")]
     KvRead,
     #[command(about = "write to kv streams")]

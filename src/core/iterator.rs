@@ -7,13 +7,13 @@ pub trait Iterator {
     fn current(&self) -> &[u8];
 }
 
-pub fn iterator_padded_size(data_size: i64, flow_padding: bool) -> u64 {
+pub fn iterator_padded_size(data_size: usize, flow_padding: bool) -> u64 {
     let chunks = num_splits(data_size, DEFAULT_CHUNK_SIZE);
     let padded_size = if flow_padding {
-        let (padded_chunks, _) = compute_padded_size(chunks);
+        let (padded_chunks, _) = compute_padded_size(chunks as u64);
         padded_chunks * DEFAULT_CHUNK_SIZE as u64
     } else {
-        chunks * DEFAULT_CHUNK_SIZE as u64
+        chunks as u64 * DEFAULT_CHUNK_SIZE as u64
     };
     padded_size
 }

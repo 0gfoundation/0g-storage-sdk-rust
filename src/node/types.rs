@@ -1,5 +1,7 @@
 use ethers::types::{Address, H256, U256};
 use serde::{Deserialize, Serialize};
+use std::collections::HashSet;
+use std::net::IpAddr;
 
 use crate::core::merkle::proof::Proof;
 
@@ -68,6 +70,10 @@ pub struct SegmentWithProof {
     pub file_size: usize,
 }
 
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct Segment(#[serde(with = "base64")] pub Vec<u8>);
+
 mod base64 {
     use serde::{Deserialize, Deserializer, Serialize, Serializer};
 
@@ -80,4 +86,34 @@ mod base64 {
         let base64 = String::deserialize(d)?;
         base64::decode(base64.as_bytes()).map_err(serde::de::Error::custom)
     }
+}
+
+#[derive(Serialize, Deserialize, Debug)]
+#[serde(rename_all = "camelCase")]
+pub struct Client {
+    pub version: String,
+    pub os: String,
+    pub protocol: String,
+    pub agent: Option<String>,
+}
+
+#[derive(Serialize, Deserialize, Debug)]
+#[serde(rename_all = "camelCase")]
+pub struct PeerConnectionStatus {
+    pub status: String,
+    pub connections_in: u8,
+    pub connections_out: u8,
+    pub last_seen_secs: u64,
+}
+
+#[derive(Serialize, Deserialize, Debug)]
+#[serde(rename_all = "camelCase")]
+pub struct PeerInfo {
+    pub client: Client,
+    pub connection_status: PeerConnectionStatus,
+    pub listening_addresses: Vec<Vec<u8>>,
+    pub seen_ips: HashSet<IpAddr>,
+    pub is_trusted: bool,
+    pub connection_direction: Option<String>, // Incoming/Outgoing
+    pub enr: Option<String>,
 }

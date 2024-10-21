@@ -13,7 +13,7 @@ ethers = { version = "2.0.14", features = ["ws"] }
 log = "0.4"
 env_logger = "0.9"
 serde_json = "1.0.0"
-jsonrpsee = { version = "0.14.0", features = ["http-client"] }
+jsonrpsee = { version = "0.14.0", features = ["full"] }
 serde = { version = "1.0", features = ["derive"] }
 tiny-keccak = { version = "2.0", features = ["keccak"] }
 futures = "0.3"
@@ -24,6 +24,13 @@ rand = "0.8.5"
 ctor = "0.1.21"
 base64 = "0.13.0"
 url = '2.2'
+hex-literal = "0.3"
+reqwest = { version = "0.11", features = ["json", "blocking"] }
+chrono = "0.4"
+
+[dev-dependencies]
+tempfile = "3.2"
+mockito = "0.31"
 
 [patch.crates-io]
 # jsonrpsee = { path = "../jsonrpsee-0.14.0/jsonrpsee",  features = ["http-client"]}

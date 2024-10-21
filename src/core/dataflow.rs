@@ -77,8 +77,8 @@ pub async fn merkle_tree(data: Arc<dyn IterableData>) -> Result<Tree> {
         .ok_or_else(|| anyhow!("Failed to build tree"))
 }
 
-pub fn num_splits(total: i64, unit: usize) -> u64 {
-    ((total - 1) / unit as i64 + 1) as u64
+pub fn num_splits(total: usize, unit: usize) -> usize {
+    (total - 1) / unit + 1
 }
 
 pub fn num_segments_padded(data: &dyn IterableData) -> usize {

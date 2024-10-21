@@ -1,6 +1,6 @@
 use clap::Parser;
 use tokio;
-use zg_storage_client::cmd::{root::{Cli, Commands}, upload};
+use zg_storage_client::cmd::{root::{Cli, Commands}, upload, download, generate_file, indexer};
 use anyhow::Result;
 
 #[tokio::main]
@@ -16,17 +16,17 @@ async fn main() -> Result<()> {
             println!("Deploying ZeroGStorage contract to {}", blockchain);
             Ok(())
         }
-        Some(Commands::Download) => {
-            println!("Downloading file from ZeroGStorage network");
-            Ok(())
+        Some(Commands::Download(download_args)) => {
+            log::info!("Downloading file from ZeroGStorage network");
+            download::run_download(download_args).await
         }
         Some(Commands::Gateway) => {
             println!("Starting gateway service");
             Ok(())
         }
-        Some(Commands::Gen) => {
-            println!("Generating a temp file for test purpose");
-            Ok(())
+        Some(Commands::Gen(generate_args)) => {
+            log::info!("Generating a temp file for test purpose");
+            generate_file::run_generate_file(generate_args).await
         }
         Some(Commands::Help { command }) => {
             if let Some(cmd) = command {
@@ -36,9 +36,9 @@ async fn main() -> Result<()> {
             }
             Ok(())
         }
-        Some(Commands::Indexer) => {
-            println!("Starting indexer service");
-            Ok(())
+        Some(Commands::Indexer(indexer_args)) => {
+            log::info!("Starting indexer service");
+            indexer::run_indexer(indexer_args).await
         }
         Some(Commands::KvRead) => {
             println!("Reading kv streams");

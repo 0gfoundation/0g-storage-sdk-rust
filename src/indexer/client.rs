@@ -1,23 +1,28 @@
 use crate::cmd::upload::UploadOption;
 use crate::common::options::LogOption;
 use crate::common::{
-    rpc::{client::{RpcClient, validate_url}, error::RpcError},
+    rpc::{
+        client::{validate_url, RpcClient},
+        error::{RpcError, ZgRpcResult},
+    },
     shard::{select, ShardedNode, ShardedNodes},
 };
+use crate::transfer::downloader::Downloader;
 use crate::core::dataflow::IterableData;
 use crate::node::client_zgs::{must_new_zgs_client, ZgsClient};
 use crate::transfer::uploader::{Uploader, Web3Client};
 use anyhow::Result;
 use ethers::types::H256;
 use futures::future::try_join_all;
-use jsonrpsee::core::RpcResult;
+use serde_json::json;
 use std::ops::Deref;
+use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Instant;
 
 pub struct IndexerClient {
     client: RpcClient,
-    option: LogOption
+    option: LogOption,
 }
 
 impl Deref for IndexerClient {
@@ -36,36 +41,51 @@ impl IndexerClient {
         Ok(Self { client, option })
     }
 
-    pub async fn upload(&self, w3_client: Web3Client, data: Arc<dyn IterableData>, opt: &UploadOption) -> Result<H256> {
+    pub async fn upload(
+        &self,
+        w3_client: Web3Client,
+        data: Arc<dyn IterableData>,
+        opt: &UploadOption,
+    ) -> Result<H256> {
+        // 设置 Uploader 模块的日志级别
+        log::set_max_level(self.option.level);
         let mut dropped = Vec::new();
 
         loop {
-            match self.new_uploader_from_indexer_nodes(w3_client.clone(), opt.expected_replica as usize, &dropped).await {
-                Ok(uploader) => {
-                    match uploader.upload(data.clone(), opt).await {
-                        Ok(tx_hash) => return Ok(tx_hash),
-                        Err(err) => {
-                            match err.downcast_ref::<RpcError>() {
-                                Some(rpc_err) => {
-                                    dropped.push(rpc_err.url.clone());
-                                    log::error!("dropped problematic node and retry");
-                                }
-                                None => {
-                                    return Err(err);
-                                }
-                            }
+            match self
+                .new_uploader_from_indexer_nodes(
+                    w3_client.clone(),
+                    opt.expected_replica as usize,
+                    &dropped,
+                )
+                .await
+            {
+                Ok(uploader) => match uploader.upload(data.clone(), opt).await {
+                    Ok(tx_hash) => return Ok(tx_hash),
+                    Err(err) => match err.downcast_ref::<RpcError>() {
+                        Some(rpc_err) => {
+                            dropped.push(rpc_err.url.clone());
+                            log::error!("dropped problematic node and retry");
                         }
-                    }
-                }
+                        None => {
+                            return Err(err);
+                        }
+                    },
+                },
                 Err(err) => return Err(err),
             }
         }
     }
 
-    pub async fn get_shard_nodes(&self) -> RpcResult<ShardedNodes> {
+    pub async fn get_shard_nodes(&self) -> ZgRpcResult<ShardedNodes> {
         self.client
             .request_no_params("indexer_getShardedNodes")
             .await
+            .map_err(|e| RpcError {
+                message: e.to_string(),
+                method: "indexer_getShardedNodes".to_string(),
+                url: self.url.clone(),
+            })
     }
 
     async fn new_uploader_from_indexer_nodes(
@@ -75,14 +95,12 @@ impl IndexerClient {
         dropped: &[String],
     ) -> Result<Uploader> {
         let clients = self.select_nodes(expected_replica, dropped).await?;
+        let urls: Vec<String> = clients
+            .iter()
+            .map(|client| client.url.to_string())
+            .collect();
 
-        let urls: Vec<String> = clients.iter().map(|client| client.url.to_string()).collect();
-
-        log::info!(
-            "get {} storage nodes from indexer: {:?}",
-            urls.len(),
-            urls
-        );
+        log::info!("get {} storage nodes from indexer: {:?}", urls.len(), urls);
 
         Uploader::new(w3_client, clients, &self.option).await
     }
@@ -116,7 +134,8 @@ impl IndexerClient {
             anyhow::bail!("Failed to select shard nodes");
         }
 
-        Ok(selected.into_iter()
+        Ok(selected
+            .into_iter()
             .map(|node| must_new_zgs_client(&node.url))
             .collect())
     }
@@ -155,11 +174,64 @@ impl IndexerClient {
 
         try_join_all(futures).await
     }
+
+    pub async fn download(&self, root: H256, file: &PathBuf, with_proof: bool) -> Result<()> {
+        let locations = self.get_file_locations(root).await?;
+
+        let mut clients = Vec::new();
+        if let Some(locations) = locations {
+            for location in locations {
+                let client = match ZgsClient::new(&location.url) {
+                    Ok(client) => client,
+                    Err(e) => {
+                        log::error!(
+                            "Failed to initialize client of node {}: {}", location.url, e
+                        );
+                        continue;
+                    }
+                };
+    
+                match client.get_shard_config().await {
+                    Ok(config) if config.is_valid() => {
+                        clients.push(client);
+                    }
+                    _ => {
+                        log::error!(
+                            "Failed to get valid shard config of node {}",
+                            client.url
+                        );
+                    }
+                }
+            }
+        }
+
+        if clients.is_empty() {
+            anyhow::bail!("No node holding the file found. FindFile triggered, try again later");
+        }
+
+        let downloader = Downloader::new(clients, &LogOption::default())?;
+
+        downloader
+            .download(root, file, with_proof)
+            .await
+    }
+
+    pub async fn get_file_locations(&self, root: H256) -> ZgRpcResult<Option<Vec<ShardedNode>>> {
+        self.client
+            .request("indexer_getFileLocations", vec![json!(root)])
+            .await
+            .map_err(|e| RpcError {
+                message: e.to_string(),
+                method: "indexer_getFileLocations".to_string(),
+                url: self.url.clone(),
+            })
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::str::FromStr;
     use tokio;
 
     #[tokio::test]
@@ -170,7 +242,29 @@ mod tests {
         // log::info!("result: {:?}", result);
         match result {
             Ok(shard_nodes) => {
-                println!("Shard node: {:?}", shard_nodes);
+                if let Some(discovers) = shard_nodes.discovered {
+                    println!("discover: {:?}", discovers[0]);
+                }
+            }
+            Err(e) => {
+                eprintln!("Error: {:?}", e);
+                panic!("Failed to get shard nodes: {:?}", e);
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn test_rpc_get_file_locations() {
+        let root =
+            H256::from_str("0x85a7ce7d6c7cb09f4e56b89b75eb5205ffacaedda838441ec222f650a8793caf")
+                .unwrap();
+
+        let client = IndexerClient::new("https://indexer-storage-testnet-standard.0g.ai").unwrap();
+        let result = client.get_file_locations(root).await;
+        // log::info!("result: {:?}", result);
+        match result {
+            Ok(shard_nodes) => {
+                println!("Shard nodes: {:?}", shard_nodes);
             }
             Err(e) => {
                 eprintln!("Error: {:?}", e);

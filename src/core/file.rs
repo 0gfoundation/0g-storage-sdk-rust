@@ -20,14 +20,14 @@ impl File {
         let info = file.metadata()?;
 
         if info.is_dir() {
-            return Err(anyhow!("File required"));
+            anyhow::bail!("File required");
         }
 
         if info.len() == 0 {
-            return Err(anyhow!("File is empty"));
+            anyhow::bail!("File is empty");
         }
 
-        let padded_size = iterator_padded_size(info.len() as i64, true);
+        let padded_size = iterator_padded_size(info.len() as usize, true);
 
         Ok(File {
             info,
@@ -72,7 +72,7 @@ impl IterableData for File {
             &self.underlying,
             offset,
             self.info.len() as i64,
-            iterator_padded_size(self.info.len() as i64, flow_padding),
+            iterator_padded_size(self.info.len() as usize, flow_padding),
             batch,
         ))
     }

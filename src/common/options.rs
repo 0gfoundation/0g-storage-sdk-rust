@@ -8,24 +8,13 @@ pub enum LogLevel {
 
 #[derive(Debug, Clone, Copy, PartialEq, PartialOrd, Eq)]
 pub struct LogOption {
-    pub level: LogLevel
+    pub level: log::LevelFilter
 }
 
 impl Default for LogOption {
     fn default() -> Self {
         LogOption {
-            level: LogLevel::Info,
-        }
-    }
-}
-
-impl LogLevel {
-    pub fn as_str(&self) -> &'static str {
-        match self {
-            LogLevel::Error => "error",
-            LogLevel::Info => "info",
-            LogLevel::Debug => "debug",
-            LogLevel::Warning => "warning",
+            level: log::LevelFilter::Info,
         }
     }
 }

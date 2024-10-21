@@ -66,7 +66,7 @@ impl FlowContract {
         total_fee: U256,
         traction_opts: TransactionRequest
     ) -> Result<TxHash, Error> {
-        let mut tx_builder = self.flow.batch_submit(submissions).legacy();;
+        let mut tx_builder = self.flow.batch_submit(submissions).legacy();
         if let Some(from) = traction_opts.from {
             tx_builder = tx_builder.from(from);
         }

@@ -1,8 +1,9 @@
 use anyhow::{Context, Result};
 use jsonrpsee::core::{client::ClientT, rpc_params, RpcResult};
+use jsonrpsee::types::ParamsSer;
 use jsonrpsee::http_client::{HttpClient, HttpClientBuilder};
 use serde::de::DeserializeOwned;
-use serde::Serialize;
+use serde_json::Value;
 use std::error::Error;
 use std::fmt::Debug;
 use std::sync::Arc;
@@ -25,12 +26,18 @@ impl RpcClient {
         })
     }
 
-    pub async fn request<P, R>(&self, method: &str, params: P) -> RpcResult<R>
+    pub async fn request<R>(&self, method: &str, params: Vec<Value>) -> RpcResult<R>
     where
-        P: Serialize,
         R: DeserializeOwned,
     {
-        self.client.request(method, rpc_params![params]).await
+        let params = params.into_iter()
+            .map(|param| match param {
+                Value::String(s) if s.len() == 64 => Value::String(format!("0x{}", s)),
+                _ => param,
+            })
+            .collect::<Vec<_>>();
+
+        self.client.request(method, Some(ParamsSer::Array(params))).await
     }
 
     pub async fn request_no_params<R>(&self, method: &str) -> RpcResult<R>

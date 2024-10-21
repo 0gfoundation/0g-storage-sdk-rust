@@ -44,7 +44,7 @@ mod tests {
     use super::*;
     #[tokio::test]
     async fn test_new_web3() {
-        let url = "http://localhost:8545";
+        let url = "https://evmrpc-testnet.0g.ai";
         let key = "0x758e4e906b7639e701c69fdcbf26bbc5001cf7e3a7ca56205d53ff88db3d3085";
 
         match new_web3(url, key).await {

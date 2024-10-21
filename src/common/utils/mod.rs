@@ -1,3 +1,5 @@
+pub mod schedule;
+
 use std::time::Duration;
 use std::str::FromStr;
 

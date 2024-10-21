@@ -23,7 +23,7 @@ use ethers::{
 use futures::future::{join_all, try_join_all};
 use std::sync::Arc;
 use std::time::Instant;
-use tokio::{time, time::Duration};
+use tokio::time::Duration;
 
 const SMALL_FILE_SIZE_THRESHOLD: i64 = 256 * 1024;
 const DEFAULT_TASK_SIZE: u32 = 10;
@@ -57,10 +57,11 @@ impl Uploader {
         clients: Vec<ZgsClient>,
         log_opt: &LogOption,
     ) -> Result<Self> {
-        // env_logger::Builder::from_env(
-        //     env_logger::Env::default().default_filter_or(log_opt.level.as_str()),
-        // )
-        // .init();
+        env_logger::Builder::from_env(
+            env_logger::Env::default().default_filter_or(log_opt.level.as_str()),
+        )
+        .init();
+
         if clients.is_empty() {
             anyhow::bail!("Storage node not specified");
         }
@@ -91,7 +92,7 @@ impl Uploader {
         })
     }
 
-    pub async fn check_log_existence(&self, root: [u8; 32]) -> Result<bool> {
+    pub async fn check_log_existence(&self, root: H256) -> Result<bool> {
         for client in &self.clients {
             match client.get_file_info(root).await {
                 Ok(Some(_)) => return Ok(true),
@@ -107,9 +108,7 @@ impl Uploader {
 
         let tree = Arc::new(merkle_tree(data.clone()).await?);
         let root = tree.root();
-        let mut root_bytes = [0u8; 32];
-        root_bytes.copy_from_slice(root.as_bytes());
-        let exist = self.check_log_existence(root_bytes).await?;
+        let exist = self.check_log_existence(root).await?;
         let tx_hash = if !opt.skip_tx | !exist {
             log::info!(
                 "Data[{:?}] to be uploaded not exist and not skip, uploading...",
@@ -234,7 +233,7 @@ impl Uploader {
 
             let mut ok = true;
             for client in &self.clients {
-                match client.get_file_info(root.to_fixed_bytes()).await {
+                match client.get_file_info(root).await {
                     Ok(Some(info)) => {
                         if finality_required <= FinalityRequirement::FileFinalized
                             && !info.finalized
@@ -287,17 +286,16 @@ impl Uploader {
             anyhow::bail!("Selected nodes cannot cover all shards");
         }
 
-        let root_bytes = tree.root().to_fixed_bytes();
+        let root = tree.root();
 
         let client_tasks = try_join_all(self.clients.iter().enumerate().map(
             |(client_index, client)| {
-                // 克隆需要在闭包中使用的值
                 let shard_config = shard_configs[client_index].clone();
                 // let client = client.clone();
 
                 async move {
                     let info = client
-                        .get_file_info(root_bytes)
+                        .get_file_info(root)
                         .await
                         .context("Failed to get file info")?;
 
@@ -520,7 +518,7 @@ mod tests {
         let web3_client = must_new_web3(chain_url, key).await;
 
         match Uploader::new(web3_client, clients, &LogOption::default()).await {
-            Ok(uploder) => {
+            Ok(_) => {
                 println!("Successfully created uploder");
             }
             Err(e) => {
