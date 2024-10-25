@@ -1,16 +1,20 @@
-use anyhow::Result;
+use anyhow::{Context, Result};
 use clap::Args;
+use tokio::signal;
+use jsonrpsee::http_server::HttpServerBuilder;
 use std::path::PathBuf;
 use std::time::Duration;
 
+use crate::indexer::api::{IndexerServer, IndexerServerImpl};
 use crate::indexer::{
-    ip_location::{IPLocationConfig, IPLocationManager},
-    node_manager::{NodeManager, NodeManagerConfig},
+    file_location_cache::{DefaultFileLocationCache, FileLocationCacheConfig},
+    ip_location::{DefaultIPLocationManager, IPLocationConfig},
+    node_manager::{DefaultNodeManger, NodeManagerConfig},
 };
 
 #[derive(Args)]
 pub struct IndexerArgs {
-    #[arg(long, default_value = ":12345", help = "Indexer service endpoint")]
+    #[arg(long, default_value = "12345", help = "Indexer service endpoint")]
     pub endpoint: String,
 
     #[arg(long, help = "Trusted storage node URLs that separated by comma")]
@@ -92,20 +96,18 @@ pub async fn run_indexer(args: &IndexerArgs) -> Result<()> {
         access_token: args.ip_location_token.clone().unwrap_or_default(),
     };
 
-    // let location_cache_config = FileLocationCacheConfig {
-    //     discovery_node: args.node.clone().unwrap_or_default(),
-    //     discovery_ports: args.discover_ports.clone(),
-    //     expiry: Duration::from_secs(args.file_location_cache_expiry),
-    //     cache_size: args.file_location_cache_size,
-    // };
+    let location_cache_config = FileLocationCacheConfig {
+        discovery_node: args.node.clone().unwrap_or_default(),
+        discovery_ports: args.discover_ports.clone(),
+        expiry: Duration::from_secs(args.file_location_cache_expiry),
+        cache_size: args.file_location_cache_size,
+    };
 
-    IPLocationManager::init(location_config)?;
+    let _ = DefaultIPLocationManager::init(location_config).await;
 
-    NodeManager::init(node_config).await?;
+    let _ = DefaultNodeManger::init(node_config).await;
 
-    // let file_location_cache_closable = indexer::init_file_location_cache(location_cache_config)?;
-
-    // let api = indexer::new_indexer_api();
+    let _ = DefaultFileLocationCache::init(location_cache_config).await;
 
     log::info!(
         "Starting indexer service ... trusted: {}, discover: {}",
@@ -113,18 +115,25 @@ pub async fn run_indexer(args: &IndexerArgs) -> Result<()> {
         args.node.is_some()
     );
 
-    // let gateway_config = GatewayConfig {
-    //     endpoint: args.endpoint.clone(),
-    //     nodes: args.trusted.clone(),
-    //     max_download_file_size: args.max_download_file_size,
-    //     rpc_handler: util::must_new_rpc_handler(vec![(api.namespace(), api)]),
-    // };
+    // Start server
+    let server = HttpServerBuilder::default()
+        .build(format!("127.0.0.1:{}", args.endpoint))
+        .await
+        .context("Failed to build HTTP server")?;
 
-    // gateway::must_serve_with_rpc(gateway_config).await?;
+    let server_addr = server.local_addr()?;
 
-    // // Cleanup
-    // (node_manager_closable)();
-    // (file_location_cache_closable)();
+    // Start the server and handle errors gracefully
+    let server_handle = server.start(IndexerServerImpl.into_rpc())?;
+    log::info!("Indexer service running at {}", server_addr);
+
+    // 5. 等待关闭信号
+    signal::ctrl_c().await?;
+    log::info!("Received shutdown signal");
+
+    // 6. 关闭服务器
+    server_handle.stop()?;
+    log::info!("Server shutdown complete");
 
     Ok(())
 }

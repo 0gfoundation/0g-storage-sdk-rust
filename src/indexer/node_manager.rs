@@ -6,7 +6,7 @@ use std::time::{Duration, Instant};
 use tokio::sync::Mutex;
 use url::Url;
 
-use super::ip_location::IPLocationManager;
+use super::ip_location::DefaultIPLocationManager;
 use crate::common::shard::ShardedNode;
 use crate::common::utils::schedule::Scheduler;
 use crate::node::{client_admin::AdminClient, client_zgs::ZgsClient};
@@ -24,6 +24,7 @@ pub struct NodeManagerConfig {
     pub update_interval: Duration,
 }
 
+#[derive(Debug)]
 pub struct NodeManager {
     trusted: RwLock<HashMap<String, Arc<ZgsClient>>>,
     discovery_node: Option<AdminClient>,
@@ -32,72 +33,6 @@ pub struct NodeManager {
 }
 
 impl NodeManager {
-    pub async fn init(config: NodeManagerConfig) -> Result<()> {
-        let mut manager_guard = NODE_MANAGER.lock().await;
-
-        if manager_guard.is_none() {
-            *manager_guard = Some(NodeManager {
-                trusted: RwLock::new(HashMap::new()),
-                discovery_node: None,
-                discovery_ports: vec![],
-                discovered: RwLock::new(HashMap::new()),
-            });
-        }
-
-        if let Some(manager) = manager_guard.as_mut() {
-            if !config.discovery_node.is_empty() {
-                manager.discovery_node = Some(AdminClient::new(&config.discovery_node)?);
-            }
-
-            manager.discovery_ports = config.discovery_ports.clone();
-            manager.add_trusted_nodes(&config.trusted_nodes)?;
-
-            if !config.discovery_node.is_empty() {
-                let node_manager = NODE_MANAGER.clone();
-                let discovery_interval = config.discovery_interval;
-                let update_interval = config.update_interval;
-
-                let scheduler = Scheduler::new();
-
-                let node_manager_clone = node_manager.clone();
-                scheduler.schedule_now(
-                    move || {
-                        let node_manager = node_manager_clone.clone();
-                        async move {
-                            let mut guard = node_manager.lock().await;
-                            if let Some(manager) = guard.as_mut() {
-                                manager.discover().await
-                            } else {
-                                anyhow::bail!("")
-                            }
-                        }
-                    },
-                    discovery_interval,
-                    "Failed to discover storage nodes once",
-                );
-
-                let node_manager_clone = node_manager.clone();
-                scheduler.schedule(
-                    move || {
-                        let node_manager = node_manager_clone.clone();
-                        async move {
-                            let mut guard = node_manager.lock().await;
-                            if let Some(manager) = guard.as_mut() {
-                                manager.update().await
-                            } else {
-                                anyhow::bail!("")
-                            }
-                        }
-                    },
-                    update_interval,
-                    "Failed to update shard configs once",
-                );
-            }
-        }
-
-        Ok(())
-    }
-
     pub fn trusted_clients(&self) -> Vec<Arc<ZgsClient>> {
         self.trusted.read().unwrap().values().cloned().collect()
     }
@@ -138,10 +73,10 @@ impl NodeManager {
         self.discovered.read().unwrap().values().cloned().collect()
     }
 
-    pub fn add_trusted_nodes(&self, nodes: &[String]) -> Result<()> {
+    pub async fn add_trusted_nodes(&self, nodes: &[String]) -> Result<()> {
         for node in nodes {
             let ip = parse_ip(node);
-            if let Err(e) = IPLocationManager::query(&ip) {
+            if let Err(e) = DefaultIPLocationManager::query(&ip).await {
                 warn!("Failed to query IP location for {}: {}", ip, e);
             }
 
@@ -213,7 +148,7 @@ impl NodeManager {
 
     async fn update_node(&self, url: &str) -> Result<ShardedNode> {
         let ip = parse_ip(url);
-        if let Err(e) = IPLocationManager::query(&ip) {
+        if let Err(e) = DefaultIPLocationManager::query(&ip).await {
             warn!("Failed to query IP location for {}: {}", ip, e);
         }
 
@@ -280,5 +215,115 @@ fn parse_ip(url: &str) -> String {
         parsed_url.host_str().unwrap_or(&url).to_string()
     } else {
         url
+    }
+}
+
+pub struct DefaultNodeManger;
+
+impl DefaultNodeManger {
+    pub async fn init(config: NodeManagerConfig) -> Result<()> {
+        let mut manager_guard = NODE_MANAGER.lock().await;
+
+        if manager_guard.is_none() {
+            *manager_guard = Some(NodeManager {
+                trusted: RwLock::new(HashMap::new()),
+                discovery_node: None,
+                discovery_ports: vec![],
+                discovered: RwLock::new(HashMap::new()),
+            });
+        }
+
+        if let Some(manager) = manager_guard.as_mut() {
+            if !config.discovery_node.is_empty() {
+                manager.discovery_node = Some(AdminClient::new(&config.discovery_node)?);
+            }
+
+            manager.discovery_ports = config.discovery_ports.clone();
+            manager.add_trusted_nodes(&config.trusted_nodes).await?;
+
+            if !config.discovery_node.is_empty() {
+                let node_manager = NODE_MANAGER.clone();
+                let discovery_interval = config.discovery_interval;
+                let update_interval = config.update_interval;
+
+                let scheduler = Scheduler::new();
+
+                let node_manager_clone = node_manager.clone();
+                scheduler.schedule_now(
+                    move || {
+                        let node_manager = node_manager_clone.clone();
+                        async move {
+                            let mut guard = node_manager.lock().await;
+                            if let Some(manager) = guard.as_mut() {
+                                manager.discover().await
+                            } else {
+                                anyhow::bail!("")
+                            }
+                        }
+                    },
+                    discovery_interval,
+                    "Failed to discover storage nodes once",
+                );
+
+                let node_manager_clone = node_manager.clone();
+                scheduler.schedule(
+                    move || {
+                        let node_manager = node_manager_clone.clone();
+                        async move {
+                            let mut guard = node_manager.lock().await;
+                            if let Some(manager) = guard.as_mut() {
+                                manager.update().await
+                            } else {
+                                anyhow::bail!("")
+                            }
+                        }
+                    },
+                    update_interval,
+                    "Failed to update shard configs once",
+                );
+            }
+        }
+
+        Ok(())
+    }
+
+    pub async fn trusted_clients() -> Result<Vec<Arc<ZgsClient>>> {
+        let manager = NODE_MANAGER.lock().await;
+
+        if let Some(manager) = manager.as_ref() {
+            Ok(manager.trusted_clients())
+        } else {
+            anyhow::bail!("NODE_MANAGER is not initialized")
+        }
+    }
+
+    pub async fn trusted() -> Result<Vec<ShardedNode>> {
+        let manager = NODE_MANAGER.lock().await;
+
+        if let Some(manager) = manager.as_ref() {
+            manager.trusted().await
+        } else {
+            anyhow::bail!("NODE_MANAGER is not initialized")
+        }
+    }
+
+    pub async fn discovered() -> Result<Vec<ShardedNode>> {
+        let manager = NODE_MANAGER.lock().await;
+
+        if let Some(manager) = manager.as_ref() {
+            Ok(manager.discovered())
+        } else {
+            anyhow::bail!("NODE_MANAGER is not initialized")
+        }
+    }
+
+    pub async fn add_trusted_nodes(nodes: &[String]) -> Result<()> {
+        let manager = NODE_MANAGER.lock().await;
+
+        if let Some(manager) = manager.as_ref() {
+            manager.add_trusted_nodes(nodes).await
+        } else {
+            anyhow::bail!("NODE_MANAGER is not initialized")
+        }
     }
 }

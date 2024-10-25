@@ -3,7 +3,7 @@ use ethers::types::H256;
 use serde_json::json;
 use std::ops::Deref;
 
-use super::types::{FileInfo, SegmentWithProof, Status, Segment};
+use super::types::{FileInfo, Segment, SegmentWithProof, Status};
 use crate::common::options::LogOption;
 use crate::common::rpc::{
     client::{validate_url, RpcClient},
@@ -99,7 +99,7 @@ impl ZgsClient {
         &self,
         root: H256,
         start_index: u64,
-        end_index: u64
+        end_index: u64,
     ) -> ZgRpcResult<Option<Segment>> {
         self.client
             .request(
@@ -110,6 +110,20 @@ impl ZgsClient {
             .map_err(|e| RpcError {
                 message: e.to_string(),
                 method: "zgs_downloadSegment".to_string(),
+                url: self.url.clone(),
+            })
+    }
+
+    pub async fn get_file_info_by_tx_seq(&self, tx_seq: u64) -> ZgRpcResult<Option<FileInfo>> {
+        self.client
+            .request(
+                "zgs_getFileInfoByTxSeq",
+                vec![json!(tx_seq)],
+            )
+            .await
+            .map_err(|e| RpcError {
+                message: e.to_string(),
+                method: "zgs_getFileInfoByTxSeq".to_string(),
                 url: self.url.clone(),
             })
     }

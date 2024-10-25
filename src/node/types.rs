@@ -4,6 +4,7 @@ use std::collections::HashSet;
 use std::net::IpAddr;
 
 use crate::core::merkle::proof::Proof;
+use crate::common::shard::ShardConfig;
 
 // NetworkProtocolVersion: P2P network protocol version.
 #[derive(Serialize, Deserialize, Debug)]
@@ -116,4 +117,11 @@ pub struct PeerInfo {
     pub is_trusted: bool,
     pub connection_direction: Option<String>, // Incoming/Outgoing
     pub enr: Option<String>,
+}
+
+#[derive(Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LocationInfo {
+    pub ip: IpAddr,
+    pub shard_config: ShardConfig,
 }

@@ -237,14 +237,12 @@ mod tests {
     #[tokio::test]
     async fn test_rpc_get_shard_nodes() {
         // env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("info")).init();
-        let client = IndexerClient::new("https://indexer-storage-testnet-standard.0g.ai").unwrap();
+        let client = IndexerClient::new("http://127.0.0.1:12345").unwrap();
         let result = client.get_shard_nodes().await;
         // log::info!("result: {:?}", result);
         match result {
             Ok(shard_nodes) => {
-                if let Some(discovers) = shard_nodes.discovered {
-                    println!("discover: {:?}", discovers[0]);
-                }
+                println!("shard_nodes: {:?}", shard_nodes);
             }
             Err(e) => {
                 eprintln!("Error: {:?}", e);
@@ -259,7 +257,7 @@ mod tests {
             H256::from_str("0x85a7ce7d6c7cb09f4e56b89b75eb5205ffacaedda838441ec222f650a8793caf")
                 .unwrap();
 
-        let client = IndexerClient::new("https://indexer-storage-testnet-standard.0g.ai").unwrap();
+        let client = IndexerClient::new("http://127.0.0.1:12345").unwrap();
         let result = client.get_file_locations(root).await;
         // log::info!("result: {:?}", result);
         match result {

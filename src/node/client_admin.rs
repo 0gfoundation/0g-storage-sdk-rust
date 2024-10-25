@@ -1,8 +1,9 @@
 use anyhow::Result;
+use serde_json::json;
 use std::ops::Deref;
 use std::collections::HashMap;
 
-use super::types::{PeerInfo};
+use super::types::{PeerInfo, LocationInfo};
 use crate::common::options::LogOption;
 use crate::common::rpc::{
     client::{validate_url, RpcClient},
@@ -42,6 +43,29 @@ impl AdminClient {
                 url: self.url.clone(),
             })
     }
+
+    pub async fn get_file_location(&self, tx_seq: u64, all_shards: bool) -> ZgRpcResult<Vec<LocationInfo>> {
+        self.client
+            .request("admin_getFileLocation", vec![json!(tx_seq), json!(all_shards)])
+            .await
+            .map_err(|e| RpcError {
+                message: e.to_string(),
+                method: "admin_getFileLocation".to_string(),
+                url: self.url.clone(),
+            })
+    }
+
+    pub async fn find_file(&self, tx_seq: u64) -> ZgRpcResult<i32> {
+        self.client
+            .request("admin_findFile", vec![json!(tx_seq)])
+            .await
+            .map_err(|e| RpcError {
+                message: e.to_string(),
+                method: "admin_findFile".to_string(),
+                url: self.url.clone(),
+            })
+    }
+    
 }
 
 #[cfg(test)]
@@ -50,7 +74,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_rpc_get_peers() {
-        let client = AdminClient::new("http://95.217.78.195:5679").unwrap();
+        let client = AdminClient::new("http://127.0.0.1:5679").unwrap();
         let result = client.get_peers().await;
 
         match result {
