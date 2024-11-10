@@ -23,11 +23,11 @@ pub enum FinalityRequirement {
 pub struct UploadOption {
     pub tags: Vec<u8>,
     pub finality_required: FinalityRequirement,
-    pub task_size: u32,
-    pub expected_replica: u32,
+    pub task_size: u64,
+    pub expected_replica: u64,
     pub skip_tx: bool,
-    pub fee: Option<U256>,
-    pub nonce: Option<U256>,
+    pub fee: U256,
+    pub nonce: U256,
 }
 
 impl Default for FinalityRequirement {
@@ -53,7 +53,7 @@ pub struct UploadArgs {
     #[arg(long, help = "Private key to interact with smart contract")]
     pub key: String,
 
-    #[arg(long, help = "ZeroGStorage storage node URL")]
+    #[arg(long, value_delimiter = ',', help = "ZeroGStorage storage node URL")]
     pub node: Vec<String>,
 
     #[arg(long, help = "ZeroGStorage indexer URL")]
@@ -64,7 +64,7 @@ pub struct UploadArgs {
         default_value = "1",
         help = "expected number of replications to upload"
     )]
-    pub expected_replica: u32,
+    pub expected_replica: u64,
 
     #[arg(
         long,
@@ -81,23 +81,23 @@ pub struct UploadArgs {
         default_value = "10",
         help = "Number of segments to upload in single rpc request"
     )]
-    pub task_size: u32,
+    pub task_size: u64,
 
-    #[arg(long, help = "fee paid in a0gi")]
-    pub fee: Option<f64>,
+    #[arg(long, default_value = "0", help = "fee paid in a0gi")]
+    pub fee: u64,
 
-    #[arg(long, help = "nonce of upload transaction")]
-    pub nonce: Option<u64>,
+    #[arg(long, default_value = "0", help = "nonce of upload transaction")]
+    pub nonce: u64,
 
-    #[arg(long, value_parser = duration_from_str, help = "cli task timeout, 0 for no timeout")]
-    pub timeout: Option<Duration>,
+    #[arg(long, default_value = "0", value_parser = duration_from_str, help = "cli task timeout, 0 for no timeout")]
+    pub timeout: Duration,
 }
 
 pub async fn run_upload(args: &UploadArgs) -> Result<()> {
     let file = Arc::new(File::open(&args.file)?);
 
-    let fee = args.fee.map(|f| U256::from((f * 1e18) as u64));
-    let nonce = args.nonce.map(U256::from);
+    let fee = U256::from(args.fee * 1e18 as u64);
+    let nonce = U256::from(args.nonce);
 
     let finality_required = if args.finality_required {
         FinalityRequirement::FileFinalized
@@ -121,8 +121,8 @@ pub async fn run_upload(args: &UploadArgs) -> Result<()> {
         let indexer_client = IndexerClient::new(indexer_url)?;
         indexer_client.upload(web3_client, file, &opt).await?;
     } else {
-        let client = must_new_zgs_clients(&args.node);
-        let uploader = Uploader::new(web3_client, client, &LogOption::default()).await?;
+        let clients = must_new_zgs_clients(&args.node);
+        let uploader = Uploader::new(web3_client, clients, &LogOption::default()).await?;
         uploader.upload(file, &opt).await?;
     }
     Ok(())

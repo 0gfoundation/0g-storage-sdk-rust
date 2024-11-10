@@ -74,7 +74,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_rpc_get_peers() {
-        let client = AdminClient::new("http://127.0.0.1:5679").unwrap();
+        let client = AdminClient::new("https://indexer-storage-testnet-standard.0g.ai:5679").unwrap();
         let result = client.get_peers().await;
 
         match result {

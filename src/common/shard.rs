@@ -2,6 +2,7 @@ use rand::rngs::StdRng;
 use rand::seq::SliceRandom;
 use rand::SeedableRng;
 use serde::{Deserialize, Serialize};
+use std::cmp;
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
@@ -26,8 +27,15 @@ impl ShardConfig {
 
     pub fn is_valid(&self) -> bool {
         self.num_shard > 0
-            && (self.num_shard & (self.num_shard - 1) == 0)
+            && self.num_shard.is_power_of_two()
             && self.shard_id < self.num_shard
+    }
+
+    pub fn next_segment_index(&self, start_segment_index: u64) -> u64 {
+        if self.num_shard < 2 {
+            return start_segment_index;
+        }
+        (start_segment_index + self.num_shard - 1 - self.shard_id) / self.num_shard * self.num_shard + self.shard_id
     }
 }
 
@@ -66,11 +74,12 @@ impl ShardSegmentTreeNode {
 
     fn pushdown(&mut self) {
         if self.children[0].is_none() {
-            for i in 0..2 {
-                self.children[i] = Some(Box::new(ShardSegmentTreeNode::new(self.num_shard << 1)));
-            }
+            self.children = [
+                Some(Box::new(ShardSegmentTreeNode::new(self.num_shard << 1))),
+                Some(Box::new(ShardSegmentTreeNode::new(self.num_shard << 1))),
+            ];
         }
-        for child in self.children.iter_mut().filter_map(|c| c.as_mut()) {
+        for child in self.children.iter_mut().flatten() {
             child.replica += self.lazy_tags;
             child.lazy_tags += self.lazy_tags;
         }
@@ -91,7 +100,7 @@ impl ShardSegmentTreeNode {
             .as_mut()
             .unwrap()
             .insert(num_shard, shard_id >> 1, expected_replica);
-        self.replica = std::cmp::min(
+        self.replica = cmp::min(
             self.children[0].as_ref().unwrap().replica,
             self.children[1].as_ref().unwrap().replica,
         );
@@ -100,24 +109,19 @@ impl ShardSegmentTreeNode {
 }
 
 pub fn select(nodes: &mut [ShardedNode], expected_replica: u32, random: bool) -> (Vec<ShardedNode>, bool) {
-    let mut selected = Vec::new();
     if expected_replica == 0 {
-        return (selected, true);
+        return (Vec::new(), true);
     }
 
     if random {
         let mut rng = StdRng::from_entropy();
         nodes.shuffle(&mut rng);
     } else {
-        nodes.sort_by(|a, b| {
-            a.config
-                .num_shard
-                .cmp(&b.config.num_shard)
-                .then_with(|| a.config.shard_id.cmp(&b.config.shard_id))
-        });
+        nodes.sort_unstable_by_key(|node| (node.config.num_shard, node.config.shard_id));
     }
 
     let mut root = ShardSegmentTreeNode::new(1);
+    let mut selected = Vec::with_capacity(nodes.len());
 
     for node in nodes.iter() {
         if root.insert(
@@ -146,13 +150,12 @@ pub fn check_replica(shard_configs: &[ShardConfig], expected_replica: u32) -> bo
         })
         .collect();
 
-    return select(&mut sharded_nodes.clone(), expected_replica, false).1
+    select(&mut sharded_nodes.clone(), expected_replica, false).1
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use ctor::ctor;
 
     fn make_shard_node(num_shard: u64, shard_id: u64) -> ShardedNode {
         ShardedNode {
@@ -194,24 +197,26 @@ mod tests {
             make_shard_node(16, 15),
         ];
 
-        let selected = select(&mut sharded_nodes, 2, false);
-        assert!(!selected.0.is_empty());
+        let (selected, success) = select(&mut sharded_nodes, 2, false);
+        assert!(success);
+        assert!(!selected.is_empty());
         log::debug!("{:?}", selected);
 
-        assert_eq!(selected.0.len(), 5);
-        assert_eq!(selected.0[0], make_shard_node(1, 0));
-        assert_eq!(selected.0[1], make_shard_node(2, 0));
-        assert_eq!(selected.0[2], make_shard_node(4, 3));
-        assert_eq!(selected.0[3], make_shard_node(8, 1));
-        assert_eq!(selected.0[4], make_shard_node(8, 5));
+        assert_eq!(selected.len(), 5);
+        assert_eq!(selected[0], make_shard_node(1, 0));
+        assert_eq!(selected[1], make_shard_node(2, 0));
+        assert_eq!(selected[2], make_shard_node(4, 3));
+        assert_eq!(selected[3], make_shard_node(8, 1));
+        assert_eq!(selected[4], make_shard_node(8, 5));
 
-        let selected = select(&mut sharded_nodes, 3, false);
+        let (selected, success) = select(&mut sharded_nodes, 3, false);
+        assert!(success);
         log::debug!("{:?}", selected);
-        assert!(!selected.0.is_empty());
-        assert_eq!(selected.0.len(), 15);
+        assert!(!selected.is_empty());
+        assert_eq!(selected.len(), 15);
 
-        let selected = select(&mut sharded_nodes, 4, false);
+        let (selected, success) = select(&mut sharded_nodes, 4, false);
+        assert!(!success);
         log::debug!("{:?}", selected);
-        assert!(!selected.1);
     }
 }

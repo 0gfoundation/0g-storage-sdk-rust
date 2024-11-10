@@ -3,7 +3,8 @@ use super::upload::UploadArgs;
 use super::download::DownloadArgs;
 use super::generate_file::GenerateArgs;
 use super::indexer::IndexerArgs;
-
+use super::kv_write::KvWriteArgs;
+use super::kv_read::KvReadArgs;
 #[derive(Parser)]
 #[command(author, version, about = "ZeroGStorage client to interact with ZeroGStorage network")]
 #[command(propagate_version = true)]
@@ -62,9 +63,9 @@ pub enum Commands {
     #[command(about = "Start indexer service")]
     Indexer(IndexerArgs),
     #[command(about = "read kv streams")]
-    KvRead,
+    KvRead(KvReadArgs),
     #[command(about = "write to kv streams")]
-    KvWrite,
+    KvWrite(KvWriteArgs),
     #[command(about = "Upload file to ZeroGStorage network")]
     Upload(UploadArgs),
 }

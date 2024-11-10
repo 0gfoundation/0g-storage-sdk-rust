@@ -3,7 +3,7 @@ use std::io::{Read, Seek, SeekFrom};
 use std::path::Path;
 use std::sync::Arc;
 use ethers::types::H256;
-use anyhow::{Result, anyhow};
+use anyhow::{Result, anyhow, Context};
 
 use super::dataflow::{IterableData, DEFAULT_CHUNK_SIZE, DEFAULT_SEGMENT_SIZE, merkle_tree};
 use super::iterator::{Iterator as CustomIterator, iterator_padded_size};
@@ -16,15 +16,15 @@ pub struct File {
 
 impl File {
     pub fn open<P: AsRef<Path>>(path: P) -> Result<Self> {
-        let file = StdFile::open(path)?;
-        let info = file.metadata()?;
+        let file = StdFile::open(&path).context("Failed to open file")?;
+        let info = file.metadata().context("Failed to get file metadata")?;
 
         if info.is_dir() {
-            anyhow::bail!("File required");
+            return Err(anyhow!("Expected a file, but got a directory"));
         }
 
         if info.len() == 0 {
-            anyhow::bail!("File is empty");
+            return Err(anyhow!("File is empty"));
         }
 
         let padded_size = iterator_padded_size(info.len() as usize, true);
@@ -36,13 +36,13 @@ impl File {
         })
     }
 
-    pub fn exists<P: AsRef<Path>>(path: P) -> Result<bool> {
-        Ok(path.as_ref().exists())
+    pub fn exists<P: AsRef<Path>>(path: P) -> bool {
+        path.as_ref().exists()
     }
 
     pub async fn merkle_root<P: AsRef<Path>>(path: P) -> Result<H256> {
-        let file = Self::open(path)?;
-        let tree = merkle_tree(Arc::new(file)).await?;
+        let file = Self::open(path).context("Failed to open file for Merkle root calculation")?;
+        let tree = merkle_tree(Arc::new(file)).await.context("Failed to generate Merkle tree")?;
         Ok(tree.root())
     }
 }
@@ -65,9 +65,7 @@ impl IterableData for File {
     }
 
     fn iterate(&self, offset: i64, batch: i64, flow_padding: bool) -> Box<dyn CustomIterator + '_> {
-        if batch % DEFAULT_CHUNK_SIZE as i64 != 0 {
-            panic!("batch size should align with chunk size");
-        }
+        assert!(batch % DEFAULT_CHUNK_SIZE as i64 == 0, "Batch size must align with chunk size");
         Box::new(FileIterator::new(
             &self.underlying,
             offset,
@@ -78,11 +76,11 @@ impl IterableData for File {
     }
 
     fn read(&self, buf: &mut [u8], offset: i64) -> Result<usize> {
-        let mut file = self.underlying.try_clone()?;
-        file.seek(SeekFrom::Start(offset as u64))?;
-        let n = file.read(buf)?;
+        let mut file = self.underlying.try_clone().context("Failed to clone file handle")?;
+        file.seek(SeekFrom::Start(offset as u64)).context("Failed to seek in file")?;
+        let n = file.read(buf).context("Failed to read from file")?;
         if n == 0 && offset < self.size() {
-            return Err(anyhow!("Unexpected EOF, offset: {:?}, data_size: {:?}", offset, self.size()));
+            return Err(anyhow!("Unexpected EOF, offset: {}, data_size: {}", offset, self.size()));
         }
         Ok(n)
     }
@@ -114,9 +112,7 @@ impl<'a> FileIterator<'a> {
     }
 
     fn padding_zeros(&mut self, length: usize) {
-        for i in self.buf_size..self.buf_size + length {
-            self.buf[i] = 0;
-        }
+        self.buf[self.buf_size..self.buf_size + length].fill(0);
         self.buf_size += length;
         self.offset += length as i64;
     }
@@ -138,21 +134,15 @@ impl<'a> CustomIterator for FileIterator<'a> {
             return Ok(true);
         }
 
-        let mut file = self.file.try_clone()?;
-        file.seek(SeekFrom::Start(self.offset as u64))?;
-        let n = file.read(&mut self.buf[..expected_buf_size])?;
+        let mut file = self.file.try_clone().context("Failed to clone file handle")?;
+        file.seek(SeekFrom::Start(self.offset as u64)).context("Failed to seek in file")?;
+        let n = file.read(&mut self.buf[..expected_buf_size]).context("Failed to read from file")?;
         self.buf_size = n;
         self.offset += n as i64;
 
-        if n == expected_buf_size {
-            return Ok(true);
+        if n < expected_buf_size {
+            self.padding_zeros(expected_buf_size - n);
         }
-
-        if n > expected_buf_size {
-            panic!("load more data from file than expected");
-        }
-
-        self.padding_zeros(expected_buf_size - n);
 
         Ok(true)
     }
@@ -165,14 +155,13 @@ impl<'a> CustomIterator for FileIterator<'a> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::io::{Write, Seek, SeekFrom};
-    use tempfile::{NamedTempFile, tempdir};
+    use std::io::Write;
+    use tempfile::{NamedTempFile, TempDir};
 
-    // Helper function to create a file with specific content
     fn create_temp_file_with_content(content: &[u8]) -> NamedTempFile {
         let mut file = NamedTempFile::new().unwrap();
         file.write_all(content).unwrap();
-        file.seek(SeekFrom::Start(0)).unwrap(); // 重置文件指针
+        file.seek(SeekFrom::Start(0)).unwrap();
         file
     }
     
@@ -180,25 +169,20 @@ mod tests {
     fn test_file_open_success() {
         let content = b"Hello, world!";
         let file = create_temp_file_with_content(content);
-    
-        // 使用 NamedTempFile 的 path 方法获取临时文件路径
-        let temp_file_path = file.path();
-        let result = File::open(temp_file_path);
-        assert!(result.is_ok(), "should open");
+        let result = File::open(file.path());
+        assert!(result.is_ok(), "Should open successfully");
     }
 
     #[test]
     fn test_file_open_empty_error() {
         let empty_file = NamedTempFile::new().unwrap();
-
         let result = File::open(empty_file.path());
         assert!(result.is_err(), "Opening empty file should return an error");
     }
 
     #[test]
     fn test_file_open_dir_error() {
-        let temp_dir = tempdir().unwrap();
-
+        let temp_dir = TempDir::new().unwrap();
         let result = File::open(temp_dir.path());
         assert!(result.is_err(), "Opening a directory should return an error");
     }
@@ -207,27 +191,21 @@ mod tests {
     async fn test_merkle_root() {
         let content = b"Some data to create a Merkle root";
         let file = create_temp_file_with_content(content);
-
-        let temp_file_path = file.path();
-        let result = File::merkle_root(temp_file_path).await;
+        let result = File::merkle_root(file.path()).await;
         assert!(result.is_ok(), "Merkle root calculation should succeed");
-
-        // Compare result with expected Merkle root (this requires having the right expected value)
         let root = result.unwrap();
-        println!("file root is: {:?}", root);
+        println!("File root is: {:?}", root);
     }
 
     #[test]
     fn test_file_iterate() {
         let content = b"12345678901234567890"; // 20 bytes
         let file = create_temp_file_with_content(content);
+        let file_struct = File::open(file.path()).unwrap();
+        println!("Padded length: {}", file_struct.padded_size);
 
-        let temp_file_path = file.path();
-        let file_struct = File::open(temp_file_path).unwrap();
-        println!("padded length: {}", file_struct.padded_size);
-
-        let mut iterator = file_struct.iterate(0, 256, true); // Batch size 10, padding enabled
-        let mut collected_data = vec![];
+        let mut iterator = file_struct.iterate(0, 256, true);
+        let mut collected_data = Vec::new();
 
         while iterator.next().unwrap() {
             collected_data.extend_from_slice(iterator.current());

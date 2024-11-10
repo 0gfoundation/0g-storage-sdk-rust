@@ -95,6 +95,24 @@ impl ZgsClient {
             })
     }
 
+    pub async fn download_segment_with_proof_by_tx_seq(
+        &self,
+        tx_seq: u64,
+        segment_index: u64,
+    ) -> ZgRpcResult<Option<SegmentWithProof>> {
+        self.client
+            .request(
+                "zgs_downloadSegmentWithProofByTxSeq",
+                vec![json!(tx_seq), json!(segment_index)],
+            )
+            .await
+            .map_err(|e| RpcError {
+                message: e.to_string(),
+                method: "zgs_downloadSegmentWithProofByTxSeq".to_string(),
+                url: self.url.clone(),
+            })
+    }
+
     pub async fn download_segment(
         &self,
         root: H256,
@@ -110,6 +128,25 @@ impl ZgsClient {
             .map_err(|e| RpcError {
                 message: e.to_string(),
                 method: "zgs_downloadSegment".to_string(),
+                url: self.url.clone(),
+            })
+    }
+
+    pub async fn download_segment_by_tx_seq(
+        &self,
+        tx_seq: u64,
+        start_index: u64,
+        end_index: u64,
+    ) -> ZgRpcResult<Option<Segment>> {
+        self.client
+            .request(
+                "zgs_downloadSegmentByTxSeq",
+                vec![json!(tx_seq), json!(start_index), json!(end_index)],
+            )
+            .await
+            .map_err(|e| RpcError {
+                message: e.to_string(),
+                method: "zgs_downloadSegmentByTxSeq".to_string(),
                 url: self.url.clone(),
             })
     }
@@ -147,7 +184,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_rpc_get_status() {
-        let urls = vec![String::from("http://127.0.0.1:5678")];
+        let urls = vec![String::from("http://47.251.78.46:5678")];
         let clients = must_new_zgs_clients(&urls);
         let result = clients[0].get_status().await;
 

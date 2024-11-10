@@ -5,6 +5,7 @@ pub mod core;
 pub mod indexer;
 pub mod node;
 pub mod transfer;
+pub mod kv;
 
 #[cfg(test)]
 mod tests {

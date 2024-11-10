@@ -6,11 +6,12 @@ use crate::contract::contract::FlowContract;
 use crate::contract::flow::Submission;
 use crate::contract::market::Market;
 use crate::core::dataflow::{
-    async_read_at, merkle_tree, segment_root, IterableData, DEFAULT_CHUNK_SIZE,
+    async_read_at, merkle_tree, segment_range, segment_root, IterableData, DEFAULT_CHUNK_SIZE,
     DEFAULT_SEGMENT_MAX_CHUNKS, DEFAULT_SEGMENT_SIZE,
 };
 use crate::core::flow::Flow;
 use crate::core::merkle::tree::Tree;
+use crate::node::types::FileInfo;
 use crate::node::{client_zgs::ZgsClient, types::SegmentWithProof};
 use anyhow::{Context, Result};
 use ethers::providers::Middleware;
@@ -95,7 +96,10 @@ impl Uploader {
     pub async fn check_log_existence(&self, root: H256) -> Result<bool> {
         for client in &self.clients {
             match client.get_file_info(root).await {
-                Ok(Some(_)) => return Ok(true),
+                Ok(Some(_)) => {
+                    println!("client[{:?}] found it", client);
+                    return Ok(true);
+                }
                 Ok(None) => continue,
                 Err(err) => return Err(err.into()),
             }
@@ -138,8 +142,13 @@ impl Uploader {
             H256::zero()
         };
 
-        self.upload_file(data, tree, opt.expected_replica, opt.task_size)
-            .await?;
+        self.upload_file(
+            data,
+            tree,
+            opt.expected_replica as u32,
+            opt.task_size as u32,
+        )
+        .await?;
         let _ = self
             .wait_for_log_entry(root, opt.finality_required, None)
             .await;
@@ -153,8 +162,8 @@ impl Uploader {
         datas: Vec<Arc<dyn IterableData>>,
         tags: Vec<Vec<u8>>,
         wait_for_receipt: bool,
-        nonce: Option<U256>,
-        fee: Option<U256>,
+        nonce: U256,
+        fee: U256,
     ) -> Result<(H256, Option<TransactionReceipt>)> {
         let submission_futures: Vec<_> = datas
             .into_iter()
@@ -177,21 +186,29 @@ impl Uploader {
         log::debug!("Price per sector: {:?}", price_per_sector);
 
         let mut opts: TransactionRequest = self.flow.create_transact_opts().await;
-        if let Some(nonce_value) = nonce {
-            opts = opts.nonce(nonce_value);
-        }
+        opts = opts.nonce(nonce);
 
         let tx = if submissions.len() == 1 {
-            let fee = fee.unwrap_or_else(|| submissions[0].fee(&price_per_sector));
+            let fee = if fee.is_zero() {
+                println!("price_per_sector: {:?}", price_per_sector);
+                submissions[0].fee(&price_per_sector)
+            } else {
+                fee
+            };
             log::info!("Submit with fee: {}", fee);
             self.flow.submit(submissions[0].clone(), fee, opts).await?
         } else {
-            let total_fee = fee.unwrap_or_else(|| {
+            let total_fee = if fee.is_zero() {
                 submissions
                     .iter()
                     .map(|s| s.fee(&price_per_sector))
                     .fold(U256::zero(), |acc, fee| acc + fee)
-            });
+            } else {
+                submissions
+                    .iter()
+                    .map(|_| fee)
+                    .fold(U256::zero(), |acc, fee| acc + fee)
+            };
             log::info!("Batch submit with fee: {}", total_fee);
             self.flow
                 .batch_submit(submissions.clone(), total_fee, opts)
@@ -279,41 +296,54 @@ impl Uploader {
         expected_replica: u32,
         task_size: u32,
     ) -> Result<SegmentUploader> {
-        let num_segments = data.num_segments();
         let shard_configs = get_shard_configs(&self.clients).await?;
+        log::info!("storage node shard configs: {:?}", shard_configs);
 
         if !check_replica(&shard_configs, expected_replica) {
             anyhow::bail!("Selected nodes cannot cover all shards");
         }
 
         let root = tree.root();
+        log::info!("tree root used query file status: {:?}", root);
 
         let client_tasks = try_join_all(self.clients.iter().enumerate().map(
             |(client_index, client)| {
                 let shard_config = shard_configs[client_index].clone();
-                // let client = client.clone();
-
                 async move {
                     let info = client
                         .get_file_info(root)
                         .await
                         .context("Failed to get file info")?;
+                    println!("file info queryed before upload: {:?}", info);
 
                     if let Some(info) = info {
                         if info.finalized {
                             return Ok::<Vec<UploadTask>, anyhow::Error>(Vec::new());
                         }
-                    }
 
-                    let tasks = (shard_config.shard_id..num_segments)
-                        .step_by(shard_config.num_shard as usize * task_size as usize)
-                        .map(|seg_index| UploadTask {
-                            client_index,
-                            seg_index,
-                            num_shard: shard_config.num_shard,
-                        })
-                        .collect::<Vec<UploadTask>>();
-                    Ok::<Vec<UploadTask>, anyhow::Error>(tasks)
+                        let (start_segment_index, end_segment_index) = segment_range(
+                            info.tx.start_entry_index as usize,
+                            info.tx.size as usize,
+                        );
+
+                        let mut seg_index = shard_config.next_segment_index(start_segment_index as u64);
+
+                        let mut tasks = Vec::new();
+
+                        while seg_index <= end_segment_index as u64 {
+                            tasks.push(UploadTask {
+                                client_index,
+                                seg_index: seg_index - start_segment_index as u64,
+                                num_shard: shard_config.num_shard,
+                            });
+    
+                            seg_index += shard_config.num_shard * task_size as u64;
+                        }
+
+                        return Ok::<Vec<UploadTask>, anyhow::Error>(tasks)
+                    } else {
+                        anyhow::bail!("")
+                    }
                 }
             },
         ))
@@ -327,6 +357,7 @@ impl Uploader {
         client_tasks.sort_by_key(|tasks| std::cmp::Reverse(tasks.len()));
 
         let tasks: Vec<UploadTask> = client_tasks.into_iter().flatten().collect();
+        log::info!("tasks: {:?}", tasks);
 
         Ok(SegmentUploader {
             data,
@@ -353,7 +384,7 @@ impl Uploader {
         );
 
         let segment_uploader = self
-            .new_segment_uploader(data, tree, expected_replica, task_size)
+            .new_segment_uploader(data, tree, expected_replica as u32, task_size)
             .await?;
 
         let tasks = (0..segment_uploader.tasks.len()).map(|task_index| {
@@ -476,7 +507,7 @@ impl SegmentUploader {
             start_seg_index,
             seg_index,
             upload_task.num_shard,
-            segment_root(&segments[0].data),
+            segment_root(&segments[0].data, 0),
         );
 
         Ok(())

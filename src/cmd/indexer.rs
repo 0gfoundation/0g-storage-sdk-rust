@@ -17,7 +17,7 @@ pub struct IndexerArgs {
     #[arg(long, default_value = "12345", help = "Indexer service endpoint")]
     pub endpoint: String,
 
-    #[arg(long, help = "Trusted storage node URLs that separated by comma")]
+    #[arg(long, help = "Trusted storage node URLs separated by comma")]
     pub trusted: Vec<String>,
 
     #[arg(long, help = "Storage node to discover peers in P2P network")]
@@ -54,7 +54,7 @@ pub struct IndexerArgs {
     #[arg(
         long,
         default_value = "600",
-        help = "Interval to write ip locations to cache file (seconds)"
+        help = "Interval to write IP locations to cache file (seconds)"
     )]
     pub ip_location_cache_interval: u64,
 
@@ -91,7 +91,7 @@ pub async fn run_indexer(args: &IndexerArgs) -> Result<()> {
     };
 
     let location_config = IPLocationConfig {
-        cache_file: args.ip_location_cache_file.to_str().unwrap().to_string(),
+        cache_file: args.ip_location_cache_file.to_str().unwrap_or_default().to_string(),
         cache_write_interval: Duration::from_secs(args.ip_location_cache_interval),
         access_token: args.ip_location_token.clone().unwrap_or_default(),
     };
@@ -103,11 +103,9 @@ pub async fn run_indexer(args: &IndexerArgs) -> Result<()> {
         cache_size: args.file_location_cache_size,
     };
 
-    let _ = DefaultIPLocationManager::init(location_config).await;
-
-    let _ = DefaultNodeManger::init(node_config).await;
-
-    let _ = DefaultFileLocationCache::init(location_cache_config).await;
+    DefaultIPLocationManager::init(location_config).await.context("Failed to initialize IP Location Manager")?;
+    DefaultNodeManger::init(node_config).await.context("Failed to initialize Node Manager")?;
+    DefaultFileLocationCache::init(location_cache_config).await.context("Failed to initialize File Location Cache")?;
 
     log::info!(
         "Starting indexer service ... trusted: {}, discover: {}",
@@ -127,11 +125,11 @@ pub async fn run_indexer(args: &IndexerArgs) -> Result<()> {
     let server_handle = server.start(IndexerServerImpl.into_rpc())?;
     log::info!("Indexer service running at {}", server_addr);
 
-    // 5. 等待关闭信号
-    signal::ctrl_c().await?;
+    // Wait for shutdown signal
+    signal::ctrl_c().await.context("Failed to listen for shutdown signal")?;
     log::info!("Received shutdown signal");
 
-    // 6. 关闭服务器
+    // Shutdown the server
     server_handle.stop()?;
     log::info!("Server shutdown complete");
 

@@ -24,6 +24,7 @@ pub trait Indexer {
     async fn get_file_locations(&self, root: String) -> RpcResult<Option<Vec<ShardedNode>>>;
 }
 
+#[derive(Clone)]
 pub struct IndexerServerImpl;
 
 #[async_trait]

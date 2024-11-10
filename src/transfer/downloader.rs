@@ -2,8 +2,8 @@ use super::download::download_file::DownloadingFile;
 use crate::common::options::LogOption;
 use crate::common::shard::ShardConfig;
 use crate::core::dataflow::{
-    merkle_tree, num_splits, segment_root, DEFAULT_CHUNK_SIZE, DEFAULT_SEGMENT_MAX_CHUNKS,
-    DEFAULT_SEGMENT_SIZE,
+    merkle_tree, num_splits, padded_segment_root, segment_root, DEFAULT_CHUNK_SIZE,
+    DEFAULT_SEGMENT_MAX_CHUNKS, DEFAULT_SEGMENT_SIZE,
 };
 use crate::core::file::File;
 use crate::core::flow::compute_padded_size;
@@ -12,9 +12,9 @@ use crate::node::types::FileInfo;
 
 use anyhow::{Context, Result};
 use ethers::types::H256;
+use futures::future::try_join_all;
 use std::path::PathBuf;
 use std::sync::Arc;
-use futures::future::try_join_all;
 
 pub struct Downloader {
     pub clients: Vec<ZgsClient>,
@@ -47,7 +47,7 @@ impl Downloader {
             .context("Failed to check file existence")?;
 
         // Download segments
-        self.download_file(file, root, info.tx.size as usize, with_proof)
+        self.download_file(file, root, info.tx.size as usize, with_proof, &info)
             .await
             .context("Failed to download file")?;
 
@@ -99,6 +99,7 @@ impl Downloader {
         root: H256,
         size: usize,
         with_proof: bool,
+        info: &FileInfo,
     ) -> Result<()> {
         let mut file = DownloadingFile::create(file, root, size)?;
         log::info!(
@@ -108,13 +109,14 @@ impl Downloader {
 
         let shard_configs = get_shard_configs(&self.clients).await?;
 
-        let mut sd = SegmentDownloader::new(&self.clients, shard_configs, &mut file, with_proof)?;
+        let mut sd =
+            SegmentDownloader::new(&self.clients, shard_configs, &mut file, with_proof, info)?;
 
         sd.download().await?;
 
         file.seal()?;
 
-        log::info!( "Completed to download file");
+        log::info!("Completed to download file");
         Ok(())
     }
 
@@ -146,47 +148,54 @@ impl Downloader {
     }
 }
 
-struct SegmentDownloader<'a>  {
+struct SegmentDownloader<'a> {
     clients: &'a Vec<ZgsClient>,
     shard_configs: Vec<ShardConfig>,
     file: &'a mut DownloadingFile,
+    tx_seq: u64,
+    start_segment_index: u64,
+    end_segment_index: u64,
     with_proof: bool,
-    segment_offset: usize,
-    num_chunks: usize,
-    num_segments: usize,
+    offset: u64,
+    num_chunks: u64,
 }
 
-impl<'a>  SegmentDownloader<'a>  {
+impl<'a> SegmentDownloader<'a> {
     fn new(
         clients: &'a Vec<ZgsClient>,
         shard_configs: Vec<ShardConfig>,
         file: &'a mut DownloadingFile,
         with_proof: bool,
+        info: &FileInfo,
     ) -> Result<Self> {
-        let offset = file.metadata().offset;
-        if offset % DEFAULT_SEGMENT_SIZE != 0 {
-            anyhow::bail!("Invalid data offset in downloading file {}", offset);
-        }
+        let start_segment_index = info.tx.start_entry_index / DEFAULT_SEGMENT_MAX_CHUNKS as u64;
+        let end_segment_index = (info.tx.start_entry_index
+            + num_splits(info.tx.size as usize, DEFAULT_CHUNK_SIZE) as u64
+            - 1)
+            / DEFAULT_SEGMENT_MAX_CHUNKS as u64;
 
-        let file_size = file.metadata().size;
+        let offset = (file.metadata().offset / DEFAULT_SEGMENT_SIZE) as u64;
 
         Ok(Self {
             clients,
             shard_configs,
             file,
+            tx_seq: info.tx.seq,
+            start_segment_index,
+            end_segment_index,
             with_proof,
-            segment_offset: offset / DEFAULT_SEGMENT_SIZE,
-            num_chunks: num_splits(file_size, DEFAULT_CHUNK_SIZE),
-            num_segments: num_splits(file_size, DEFAULT_SEGMENT_SIZE),
+            offset,
+            num_chunks: num_splits(info.tx.size as usize, DEFAULT_CHUNK_SIZE) as u64,
         })
     }
 
     async fn download(&mut self) -> Result<()> {
-        let num_tasks = self.num_segments - self.segment_offset;
+        let num_tasks = self.end_segment_index - self.start_segment_index + 1 - self.offset;
+        // println!("num_tasks: {}", num_tasks);
         let futures = (0..num_tasks).map(|task| self.download_segment(task));
-        
+
         let results = try_join_all(futures).await?;
-        
+        // println!("result: {:?}", results);
         for result in results {
             self.file.write(&result)?;
         }
@@ -194,27 +203,35 @@ impl<'a>  SegmentDownloader<'a>  {
         Ok(())
     }
 
-    async fn download_segment(&self, task: usize) -> Result<Vec<u8>> {
-        let segment_index = self.segment_offset + task;
-        let start_index = segment_index * DEFAULT_SEGMENT_MAX_CHUNKS;
-        let end_index = std::cmp::min(start_index + DEFAULT_SEGMENT_MAX_CHUNKS, self.num_chunks);
+    async fn download_segment(&self, task: u64) -> Result<Vec<u8>> {
+        let segment_index = self.offset + task;
+        // there is no not-aligned & segment-crossed file
+        let start_index = segment_index * DEFAULT_SEGMENT_MAX_CHUNKS as u64;
+        let mut end_index = start_index + DEFAULT_SEGMENT_MAX_CHUNKS as u64;
+        if end_index > self.num_chunks {
+            end_index = self.num_chunks;
+        }
 
         let root = self.file.metadata().root;
 
         for (i, shard_config) in self.shard_configs.iter().enumerate() {
-            if segment_index as u64 % shard_config.num_shard != shard_config.shard_id {
+            if (self.start_segment_index + segment_index) % shard_config.num_shard
+                != shard_config.shard_id
+            {
                 continue;
             }
 
             let client = &self.clients[i];
 
             let segment = if self.with_proof {
-                self.download_with_proof(client, root, start_index as u64, end_index as u64)
+                self.download_with_proof(client, root, start_index, end_index, self.tx_seq)
                     .await?
             } else {
                 if let Some(data) = client
-                .download_segment(root, start_index as u64, end_index as u64)
-                .await? {
+                    .download_segment_by_tx_seq(self.tx_seq, start_index as u64, end_index as u64)
+                    .await?
+                {
+                    // println!("segment: {:?}", data);
                     Some(data.0)
                 } else {
                     None
@@ -228,15 +245,18 @@ impl<'a>  SegmentDownloader<'a>  {
                 }
 
                 // Remove paddings for the last chunk
-                if segment_index == self.num_segments - 1 {
+                if self.start_segment_index + segment_index == self.end_segment_index {
                     let file_size = self.file.metadata().size;
                     let last_chunk_size = file_size % DEFAULT_CHUNK_SIZE;
-                    let paddings = DEFAULT_CHUNK_SIZE - last_chunk_size;
+                    let mut paddings = DEFAULT_CHUNK_SIZE - last_chunk_size;
+                    if paddings == DEFAULT_CHUNK_SIZE {
+                        paddings = 0;
+                    }
                     segment.truncate(segment.len() - paddings);
                 }
 
                 log::info!("Succeeded to download segment");
-
+                // println!("final segment: {:?}", segment);
                 return Ok(segment);
             }
         }
@@ -250,12 +270,15 @@ impl<'a>  SegmentDownloader<'a>  {
         root: H256,
         start_index: u64,
         end_index: u64,
+        tx_seq: u64,
     ) -> Result<Option<Vec<u8>>> {
         let segment_index = start_index / DEFAULT_SEGMENT_MAX_CHUNKS as u64;
 
         let segment = client
-            .download_segment_with_proof(root, segment_index)
+            .download_segment_with_proof_by_tx_seq(tx_seq, segment_index)
             .await?;
+
+        // println!("segment_with_proof: {:?}", segment);
 
         if let Some(segment) = segment {
             let expected_data_len = (end_index - start_index) * DEFAULT_CHUNK_SIZE as u64;
@@ -267,11 +290,11 @@ impl<'a>  SegmentDownloader<'a>  {
                 );
             }
 
-            let (num_chunks_flow_padded, _) = compute_padded_size(self.num_chunks as u64);
-            let num_segments_flow_padded =
-                (num_chunks_flow_padded - 1) / DEFAULT_SEGMENT_MAX_CHUNKS as u64 + 1;
-
-            let segment_root = segment_root(&segment.data);
+            let (segment_root, num_segments_flow_padded) = padded_segment_root(
+                segment_index,
+                &segment.data,
+                self.file.metadata().size as u64,
+            );
 
             segment
                 .proof
@@ -292,6 +315,6 @@ pub async fn get_shard_configs(clients: &Vec<ZgsClient>) -> Result<Vec<ShardConf
         let shard_config = client.get_shard_config().await?;
         shard_configs.push(shard_config);
     }
-    
+
     Ok(shard_configs)
 }

@@ -60,7 +60,7 @@ impl RpcClient {
 }
 
 pub fn validate_url(url: &str) -> Result<String> {
-    let url = Url::parse(url).context("Failed to parse URL")?;
+    let url = Url::parse(url).context(format!("Failed to parse URL: {}", url))?;
 
     if url.scheme() != "http" && url.scheme() != "https" {
         anyhow::bail!("URL scheme must be http or https");

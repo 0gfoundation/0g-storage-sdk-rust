@@ -1,4 +1,4 @@
-use anyhow::{anyhow, Error, Result};
+use anyhow::{anyhow, Result};
 use ethers::prelude::*;
 use ethers::types::U256;
 use serde_json::Value;
@@ -18,27 +18,23 @@ pub async fn deploy<M: Middleware + 'static>(
 
     let mut tx = TransactionRequest::new().data(bytecode);
 
-    if let Some(gas_price) = unsafe { CUSTOM_GAS_PRICE } {
+    if let Some(gas_price) = CUSTOM_GAS_PRICE {
         tx = tx.gas_price(gas_price);
     }
 
-    if let Some(gas_limit) = unsafe { CUSTOM_GAS_LIMIT } {
+    if let Some(gas_limit) = CUSTOM_GAS_LIMIT {
         tx = tx.gas(gas_limit);
     }
 
     let pending_tx = client.send_transaction(tx, None).await?;
-    let receipt = pending_tx
-        .await?
-        .ok_or_else(|| anyhow!("Transaction failed"))?;
+    let receipt = pending_tx.await?.ok_or_else(|| anyhow!("Transaction failed"))?;
 
-    receipt
-        .contract_address
-        .ok_or_else(|| anyhow!("No contract address in receipt"))
+    receipt.contract_address.ok_or_else(|| anyhow!("No contract address in receipt"))
 }
 
 fn parse_bytecode(data_or_file: &str) -> Result<Bytes> {
     if data_or_file.starts_with("0x") {
-        return Ok(data_or_file.parse()?);
+        return data_or_file.parse().map_err(Into::into);
     }
 
     let content = fs::read_to_string(data_or_file)?;
@@ -54,7 +50,7 @@ fn parse_bytecode(data_or_file: &str) -> Result<Bytes> {
         })
         .ok_or_else(|| anyhow!("Bytecode not found in JSON"))?;
 
-    Ok(bytecode.parse()?)
+    bytecode.parse().map_err(Into::into)
 }
 
 pub struct Contract {
@@ -62,17 +58,9 @@ pub struct Contract {
     pub account: Address,
 }
 
-// pub struct TransactOpts {
-//     pub chain_id: U256,
-//     pub gas_price: U256,
-//     pub gas_limit: U256
-// }
-
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 pub struct RetryOption {
     pub interval: Duration,
-    // Note: In Rust, we typically don't include loggers in structs.
-    // Instead, we use the `log` crate's macros directly.
 }
 
 impl Default for RetryOption {
@@ -90,9 +78,8 @@ impl Contract {
     }
 
     pub async fn create_transact_opts(&self) -> TransactionRequest {
-        let mut tx = TransactionRequest::new()
-            .from(self.account);
-        // let chain_id = self.client.get_chainid().await.unwrap_or_default();
+        let mut tx = TransactionRequest::new().from(self.account);
+
         if let Some(gas_price) = CUSTOM_GAS_PRICE {
             tx = tx.gas_price(gas_price);
         }
@@ -109,28 +96,24 @@ impl Contract {
         tx_hash: TxHash,
         success_required: bool,
         opts: &RetryOption,
-    ) -> Result<TransactionReceipt, Error> {
+    ) -> Result<TransactionReceipt> {
         let mut interval = time::interval(opts.interval);
 
         loop {
             interval.tick().await;
-            match self.client.get_transaction_receipt(tx_hash).await? {
-                Some(receipt) => {
-                    if success_required && receipt.status.unwrap_or_default().is_zero() {
-                        return Err(anyhow!("Transaction execution failed"));
-                    }
-                    return Ok(receipt);
+            if let Some(receipt) = self.client.get_transaction_receipt(tx_hash).await? {
+                if success_required && receipt.status.unwrap_or_default().is_zero() {
+                    return Err(anyhow!("Transaction execution failed"));
                 }
-                None => {
-                    log::info!("Transaction not executed yet: {:?}", tx_hash);
-                }
+                return Ok(receipt);
             }
+            log::info!("Transaction not executed yet: {:?}", tx_hash);
         }
     }
 
-    pub async fn get_nonce(&self) -> U256 {
-        let nonce = self.client.get_transaction_count(self.account, None).await.expect("Fail to get nonce");
-        log::info!("current nonce: {:?}", nonce);
-        nonce
+    pub async fn get_nonce(&self) -> Result<U256> {
+        let nonce = self.client.get_transaction_count(self.account, None).await?;
+        log::info!("Current nonce: {:?}", nonce);
+        Ok(nonce)
     }
 }

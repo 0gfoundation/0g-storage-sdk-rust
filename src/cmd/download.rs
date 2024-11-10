@@ -15,7 +15,7 @@ pub struct DownloadArgs {
     #[arg(long, help = "File name to download")]
     pub file: PathBuf,
 
-    #[arg(long, help = "ZeroGStorage storage node URL")]
+    #[arg(long, value_delimiter = ',', help = "ZeroGStorage storage node URL")]
     pub node: Vec<String>,
 
     #[arg(long, help = "ZeroGStorage indexer URL")]

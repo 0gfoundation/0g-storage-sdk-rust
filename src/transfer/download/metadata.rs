@@ -95,7 +95,9 @@ impl Metadata {
             .context("Failed to seek to write position")?;
         file.write_all(data).context("Failed to write data")?;
 
+        log::info!("offset_before_write: {}", self.offset);
         self.offset += data.len();
+        log::info!("offset_after_write: {}, data_len: {}", self.offset, data.len());
 
         let offset_bytes = (self.offset as u64).to_be_bytes();
         file.seek(SeekFrom::Start((self.size + METADATA_SIZE - 8) as u64))

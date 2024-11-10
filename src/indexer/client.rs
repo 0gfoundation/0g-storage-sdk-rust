@@ -105,13 +105,12 @@ impl IndexerClient {
         Uploader::new(w3_client, clients, &self.option).await
     }
 
-    async fn select_nodes(
+    pub async fn select_nodes(
         &self,
         expected_replica: usize,
         dropped: &[String],
     ) -> Result<Vec<ZgsClient>> {
         let ShardedNodes { trusted, .. } = self.get_shard_nodes().await?;
-
         let valid_nodes = if let Some(trusted) = trusted {
             self.validate_nodes(trusted, dropped).await?
         } else {
@@ -237,7 +236,7 @@ mod tests {
     #[tokio::test]
     async fn test_rpc_get_shard_nodes() {
         // env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("info")).init();
-        let client = IndexerClient::new("http://127.0.0.1:12345").unwrap();
+        let client = IndexerClient::new("https://indexer-storage-testnet-standard.0g.ai").unwrap();
         let result = client.get_shard_nodes().await;
         // log::info!("result: {:?}", result);
         match result {

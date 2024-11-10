@@ -1,14 +1,13 @@
 use super::dataflow::{
-    async_read_at, read_at, segment_root, IterableData, DEFAULT_CHUNK_SIZE,
-    DEFAULT_SEGMENT_MAX_CHUNKS,
+    async_read_at, segment_root, IterableData, DEFAULT_CHUNK_SIZE, DEFAULT_SEGMENT_MAX_CHUNKS,
 };
 use super::merkle::tree_builder::TreeBuilder;
 use crate::contract::flow::{Submission, SubmissionNode};
 use anyhow::{anyhow, Result};
+use chrono::offset;
 use ethers::types::{Bytes, H256, U256};
-use futures::future::{join_all, try_join_all};
-use log::debug;
-use std::borrow::Borrow;
+use futures::future::try_join_all;
+use log::{debug, trace};
 use std::sync::Arc;
 
 pub struct Flow {
@@ -22,40 +21,49 @@ impl Flow {
     }
 
     pub async fn create_submission(&self) -> Result<Submission> {
-        let mut submission = Submission {
+        let submission = Submission {
             length: U256::from(self.data.size()),
             tags: Bytes::from(self.tags.clone()),
             nodes: Vec::new(),
         };
-        log::debug!("submission: {:?}", submission);
-        let mut offset = 0;
-        for chunks in self.split_nodes() {
-            debug!("chunks: {:?}", chunks);
-            let node = self.create_node(offset, chunks).await?;
-            submission.nodes.push(node);
-            offset += chunks * DEFAULT_CHUNK_SIZE as i64;
-        }
+        debug!("Creating submission: {:?}", submission);
 
-        Ok(submission)
+        let mut offset = 0;
+        let nodes = try_join_all(
+            self.split_nodes()
+                .into_iter()
+                .enumerate()
+                .map(|(i, chunks)| {
+                    log::debug!("{}th node contain {} chunks", i, chunks);
+                    let node = self.create_node(offset, chunks);
+                    offset += DEFAULT_CHUNK_SIZE as i64 * chunks;
+                    return node;
+                }),
+        )
+        .await?;
+
+        Ok(Submission {
+            nodes,
+            ..submission
+        })
     }
 
     fn split_nodes(&self) -> Vec<i64> {
-        let mut nodes = Vec::new();
         let chunks = self.data.num_chunks();
         let (padded_chunks, chunks_next_pow2) = compute_padded_size(chunks);
+        let mut nodes = Vec::new();
+        let mut remaining_chunks = padded_chunks;
         let mut next_chunk_size = chunks_next_pow2;
 
-        let mut padded_chunks = padded_chunks;
-        while padded_chunks > 0 {
-            if padded_chunks >= next_chunk_size {
-                padded_chunks -= next_chunk_size;
+        while remaining_chunks > 0 {
+            if remaining_chunks >= next_chunk_size {
+                remaining_chunks -= next_chunk_size;
                 nodes.push(next_chunk_size as i64);
             }
             next_chunk_size /= 2;
         }
 
-        debug!("SplitNodes: chunks={}, nodeSize={:?}", chunks, nodes);
-
+        log::info!("Split nodes: chunks={}, node_sizes={:?}", chunks, nodes);
         nodes
     }
 
@@ -84,7 +92,7 @@ impl Flow {
                     let segment_offset = offset + i * batch;
                     let segment_size = batch.min(size - i * batch);
 
-                    log::debug!(
+                    trace!(
                         "Processing segment {}/{}: offset={}, size={}",
                         i + 1,
                         num_segments,
@@ -100,7 +108,7 @@ impl Flow {
                     )
                     .await?;
 
-                    let hash = segment_root(&buf);
+                    let hash = segment_root(&buf, 0);
                     Ok::<_, anyhow::Error>(hash)
                 }
             })
@@ -121,27 +129,16 @@ impl Flow {
 
         let num_chunks = size / DEFAULT_CHUNK_SIZE as i64;
         let height = (num_chunks as f64).log2() as u64;
-        let mut root_bytes = [0u8; 32];
-        root_bytes.copy_from_slice(tree.root().as_bytes());
 
         Ok(SubmissionNode {
-            root: root_bytes,
+            root: *tree.root().as_fixed_bytes(),
             height: U256::from(height),
         })
     }
 }
 
 fn next_pow2(input: u64) -> u64 {
-    let mut x = input;
-    x -= 1;
-    x |= x >> 32;
-    x |= x >> 16;
-    x |= x >> 8;
-    x |= x >> 4;
-    x |= x >> 2;
-    x |= x >> 1;
-    x += 1;
-    x
+    1u64.checked_shl(64 - input.leading_zeros()).unwrap_or(0)
 }
 
 pub fn compute_padded_size(chunks: u64) -> (u64, u64) {
@@ -150,12 +147,7 @@ pub fn compute_padded_size(chunks: u64) -> (u64, u64) {
         return (chunks_next_pow2, chunks_next_pow2);
     }
 
-    let min_chunk = if chunks_next_pow2 >= 16 {
-        chunks_next_pow2 / 16
-    } else {
-        1
-    };
-
+    let min_chunk = chunks_next_pow2.max(16) / 16;
     let padded_chunks = ((chunks - 1) / min_chunk + 1) * min_chunk;
     (padded_chunks, chunks_next_pow2)
 }
@@ -183,6 +175,6 @@ mod tests {
         let flow = Flow::new(Arc::new(data), tag);
 
         let submission = flow.create_submission().await.unwrap();
-        print!("Submission: {:?}", submission);
+        println!("Submission: {:?}", submission);
     }
 }
