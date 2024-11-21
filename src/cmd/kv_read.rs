@@ -32,10 +32,10 @@ pub struct KvReadArgs {
     pub timeout: Duration,
 }
 
-pub async fn run_kv_read(args: &KvReadArgs) -> Result<String> {
+pub async fn run_kv_read(args: &KvReadArgs) -> Result<HashMap<String, Vec<u8>>> {
     let kv_client = KvClient::new(&args.node)?;
     let stream_id = H256::from_slice(pad_to_32_bytes(&args.stream_id.trim_start_matches("0x"))?.as_slice());
-    let mut result = HashMap::new(); 
+    let mut result  = HashMap::new(); 
 
     for key in args.stream_keys.iter() {
         let mut val = ValueSegment {
@@ -52,7 +52,7 @@ pub async fn run_kv_read(args: &KvReadArgs) -> Result<String> {
                 MAX_QUERY_SIZE as u64, 
                 Some(val.version),
             ).await?;
-            println!("seg: {:?}", seg);
+            // println!("seg: {:?}", seg);
             if val.version == u64::MAX {
                 val.version = seg.version;
             } else if val.version != seg.version {
@@ -68,5 +68,5 @@ pub async fn run_kv_read(args: &KvReadArgs) -> Result<String> {
             }
         }
     }
-    Ok(serde_json::to_string(&result)?)
+    Ok(result)
 }

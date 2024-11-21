@@ -3,7 +3,7 @@ use ethers::types::{H256, Address};
 use hex::{encode as hex_encode, decode as hex_decode};
 use std::cmp::Ordering;
 
-use super::types::{AccessControl, AccessControlType, StreamData, StreamRead, StreamWrite, StreamError};
+use super::types::{AccessControl, AccessControlType, StreamData, StreamRead, StreamWrite, StreamError, STREAM_DOMAIN};
 
 // Constants
 const MAX_SET_SIZE: usize = 1 << 16; // 64K
@@ -136,6 +136,7 @@ impl StreamDataBuilder {
     pub fn set(&mut self, stream_id: H256, key: &[u8], data: Vec<u8>) -> &mut Self {
         self.add_stream_id(stream_id);
         let key_hex = format!("0x{}", hex_encode(key));
+        println!("key hex: {:?}", key_hex);
         self.writes
             .entry(stream_id)
             .or_insert_with(HashMap::new)
@@ -179,13 +180,19 @@ impl StreamDataBuilder {
     pub fn set_key_to_special(&mut self, stream_id: H256, key: Vec<u8>) -> &mut Self {
         self.with_control(AccessControlType::SetKeyToSpecial, stream_id, None, Some(key))
     }
-
-    // ... 其他访问控制方法的实现与上面类似 ...
 }
 
-// 辅助函数
-fn create_tags(ids: &[H256]) -> Vec<u8> {
-    // 实现标签创建逻辑
-    // 这里需要根据具体需求实现
-    Vec::new()
+fn create_tags(stream_ids: &[H256]) -> Vec<u8> {
+    // Pre-allocate capacity for the result vector
+    let mut result = Vec::with_capacity(H256::len_bytes() * (1 + stream_ids.len()));
+
+    // Add StreamDomain hash to result
+    result.extend_from_slice(STREAM_DOMAIN.as_bytes());
+
+    // Add each stream_id to result
+    for stream_id in stream_ids {
+        result.extend_from_slice(stream_id.as_bytes());
+    }
+
+    result
 }

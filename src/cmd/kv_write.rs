@@ -128,8 +128,10 @@ pub async fn run_kv_write(args: &KvWriteArgs) -> Result<()> {
         return Err(anyhow!("no keys to write"));
     }
 
+    println!("stream_id in args: {:?}", args.stream_id);
     let stream_id =
         H256::from_slice(pad_to_32_bytes(&args.stream_id.trim_start_matches("0x"))?.as_slice());
+    println!("stream_id: {:?}", stream_id);
 
     for (key, value) in args.stream_keys.iter().zip(args.stream_values.iter()) {
         batcher.set(stream_id, key.as_bytes(), value.as_bytes().to_vec());

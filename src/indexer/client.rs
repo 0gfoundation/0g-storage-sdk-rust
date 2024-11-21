@@ -7,9 +7,9 @@ use crate::common::{
     },
     shard::{select, ShardedNode, ShardedNodes},
 };
-use crate::transfer::downloader::Downloader;
 use crate::core::dataflow::IterableData;
 use crate::node::client_zgs::{must_new_zgs_client, ZgsClient};
+use crate::transfer::downloader::Downloader;
 use crate::transfer::uploader::{Uploader, Web3Client};
 use anyhow::Result;
 use ethers::types::H256;
@@ -50,12 +50,15 @@ impl IndexerClient {
         // 设置 Uploader 模块的日志级别
         log::set_max_level(self.option.level);
         let mut dropped = Vec::new();
-
+        let mut expected_replica = 1;
+        if opt.expected_replica > 0 {
+            expected_replica = opt.expected_replica;
+        }
         loop {
             match self
                 .new_uploader_from_indexer_nodes(
                     w3_client.clone(),
-                    opt.expected_replica as usize,
+                    expected_replica as usize,
                     &dropped,
                 )
                 .await
@@ -99,7 +102,7 @@ impl IndexerClient {
             .iter()
             .map(|client| client.url.to_string())
             .collect();
-
+        println!("get {} storage nodes from indexer: {:?}", urls.len(), urls);
         log::info!("get {} storage nodes from indexer: {:?}", urls.len(), urls);
 
         Uploader::new(w3_client, clients, &self.option).await
@@ -184,21 +187,20 @@ impl IndexerClient {
                     Ok(client) => client,
                     Err(e) => {
                         log::error!(
-                            "Failed to initialize client of node {}: {}", location.url, e
+                            "Failed to initialize client of node {}: {}",
+                            location.url,
+                            e
                         );
                         continue;
                     }
                 };
-    
+
                 match client.get_shard_config().await {
                     Ok(config) if config.is_valid() => {
                         clients.push(client);
                     }
                     _ => {
-                        log::error!(
-                            "Failed to get valid shard config of node {}",
-                            client.url
-                        );
+                        log::error!("Failed to get valid shard config of node {}", client.url);
                     }
                 }
             }
@@ -210,9 +212,7 @@ impl IndexerClient {
 
         let downloader = Downloader::new(clients, &LogOption::default())?;
 
-        downloader
-            .download(root, file, with_proof)
-            .await
+        downloader.download(root, file, with_proof).await
     }
 
     pub async fn get_file_locations(&self, root: H256) -> ZgRpcResult<Option<Vec<ShardedNode>>> {

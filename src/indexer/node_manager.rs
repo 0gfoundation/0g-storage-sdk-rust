@@ -257,7 +257,7 @@ impl DefaultNodeManger {
                             if let Some(manager) = guard.as_mut() {
                                 manager.discover().await
                             } else {
-                                anyhow::bail!("")
+                                anyhow::bail!("Discover node at once failed")
                             }
                         }
                     },
@@ -274,7 +274,7 @@ impl DefaultNodeManger {
                             if let Some(manager) = guard.as_mut() {
                                 manager.update().await
                             } else {
-                                anyhow::bail!("")
+                                anyhow::bail!("Discover node periodically failed")
                             }
                         }
                     },

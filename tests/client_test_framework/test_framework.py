@@ -108,16 +108,20 @@ class ClientTestFramework(TestFramework):
         skip_tx = True,
     ):
         upload_args = [
-            self.cli_binary,
+            "cargo",
+            "run",
+            "--release",
+            "--",
             "--gas-limit",
             "10000000",
             "upload",
             "--url",
             blockchain_node_rpc_url,
             "--key",
-            encode_hex(key),
-            "--skip-tx"
+            encode_hex(key)
         ]
+        if skip_tx:
+            upload_args.append("--skip-tx")
         if node_rpc_url is not None:
             upload_args.append("--node")
             upload_args.append(node_rpc_url)
@@ -170,7 +174,10 @@ class ClientTestFramework(TestFramework):
     ):
         file_to_download = os.path.join(self.root_dir, "download_{}_{}".format(root, time.time()))
         download_args = [
-            self.cli_binary,
+            "cargo",
+            "run",
+            "--release",
+            "--",
             "download",
             "--file",
             file_to_download,
@@ -225,24 +232,26 @@ class ClientTestFramework(TestFramework):
         skip_tx = True,
     ):
         kv_write_args = [
-            self.cli_binary,
+            "cargo",
+            "run",
+            "--release",
+            "--",
+            "--gas-limit",
+            "10000000",
             "kv-write",
             "--url",
             blockchain_node_rpc_url,
             "--key",
             encode_hex(key),
-            "--skip-tx="+str(skip_tx),
             "--stream-id",
             stream_id,
             "--stream-keys",
             kv_keys,
             "--stream-values",
-            kv_values,
-            "--log-level",
-            "debug",
-            "--gas-limit",
-            "10000000",
+            kv_values
         ]
+        if skip_tx:
+            kv_write_args.append("--skip-tx")
         if node_rpc_url is not None:
             kv_write_args.append("--node")
             kv_write_args.append(node_rpc_url)
@@ -284,16 +293,17 @@ class ClientTestFramework(TestFramework):
         kv_keys
     ):
         kv_read_args = [
-            self.cli_binary,
+            "cargo",
+            "run",
+            "--release",
+            "--",
             "kv-read",
             "--node",
             node_rpc_url,
             "--stream-id",
             stream_id,
             "--stream-keys",
-            kv_keys,
-            "--log-level",
-            "debug",
+            kv_keys
         ]
         self.log.info("kv read with cli: {}".format(kv_read_args))
 
@@ -319,8 +329,7 @@ class ClientTestFramework(TestFramework):
             output.close()
 
         assert return_code == 0, "%s read kv failed, output: %s, log: %s" % (self.cli_binary, output_name, lines)
-
-        return json.loads(lines[0].decode("utf-8").strip())
+        return json.loads(lines[-1].decode("utf-8").strip())
 
     def setup_kv_node(self, index, stream_ids, updated_config={}):
         build_kv(Path(self.kv_binary).parent.absolute())
@@ -346,11 +355,9 @@ class ClientTestFramework(TestFramework):
             self.cli_binary,
             "indexer",
             "--endpoint",
-            ":{}".format(indexer_port(0)),
+            "{}".format(indexer_port(0)),
             "--trusted",
-            trusted,
-            "--log-level",
-            "debug",
+            trusted
         ]
         if discover_ports is not None:
             indexer_args.append("--discover-ports")
@@ -358,6 +365,7 @@ class ClientTestFramework(TestFramework):
         if discover_node is not None:
             indexer_args.append("--node")
             indexer_args.append(discover_node)
+
         self.log.info("start indexer with args: {}".format(indexer_args))
         data_dir = os.path.join(self.root_dir, "indexer0")
         os.mkdir(data_dir)
@@ -371,7 +379,7 @@ class ClientTestFramework(TestFramework):
             indexer_args,
             stdout=stdout,
             stderr=stderr,
-            cwd=data_dir,
+            text=True,
             env=os.environ.copy(),
         )
         self.indexer_rpc_url = "http://127.0.0.1:{}".format(indexer_port(0))

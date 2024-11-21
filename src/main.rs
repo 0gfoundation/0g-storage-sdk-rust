@@ -1,8 +1,12 @@
-
+use anyhow::Result;
 use clap::Parser;
 use tokio;
-use zg_storage_client::cmd::{root::{Cli, Commands}, upload, download, generate_file, indexer, kv_write, kv_read};
-use anyhow::Result;
+use zg_storage_client::cmd::{
+    download, generate_file, indexer, kv_read, kv_write,
+    root::{Cli, Commands},
+    upload,
+};
+use std::collections::HashMap;
 
 #[tokio::main]
 async fn main() -> Result<()> {
@@ -43,15 +47,25 @@ async fn main() -> Result<()> {
         }
         Some(Commands::KvRead(kv_read_args)) => {
             let result = kv_read::run_kv_read(kv_read_args).await?;
-            println!("Reading kv streams: {}", result);
+            let mut string_result: HashMap<String, String> = HashMap::new();
+
+            for (key, data) in result.iter() {
+                // Try to convert data from Vec<u8> to a UTF-8 String
+                let value_as_string = match String::from_utf8(data.clone()) {
+                    Ok(string) => string,
+                    Err(_) => "[Invalid UTF-8 data]".to_string(),
+                };
+                string_result.insert(key.clone(), value_as_string);
+            }
+
+            let json_string =
+                serde_json::to_string(&string_result).expect("Failed to serialize to JSON");
+
+            println!("{}", json_string);
             Ok(())
         }
-        Some(Commands::KvWrite(kv_write_args)) => {
-            kv_write::run_kv_write(kv_write_args).await
-        },
-        Some(Commands::Upload(upload_args)) => {
-            upload::run_upload(upload_args).await
-        },
+        Some(Commands::KvWrite(kv_write_args)) => kv_write::run_kv_write(kv_write_args).await,
+        Some(Commands::Upload(upload_args)) => upload::run_upload(upload_args).await,
         None => {
             println!("No command was used");
             Ok(())

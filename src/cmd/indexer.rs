@@ -40,6 +40,7 @@ pub struct IndexerArgs {
     #[arg(
         long,
         default_value = "5678",
+        value_delimiter = ',',
         help = "Ports to try for discovered nodes"
     )]
     pub discover_ports: Vec<u16>,
@@ -77,6 +78,13 @@ pub struct IndexerArgs {
         help = "Maximum file size in bytes to download"
     )]
     pub max_download_file_size: u64,
+
+    #[arg(
+        long,
+        default_value = "1",
+        help = "expected number of replications to upload"
+    )]
+    pub expected_replica: u64,
 }
 
 pub async fn run_indexer(args: &IndexerArgs) -> Result<()> {
@@ -114,24 +122,33 @@ pub async fn run_indexer(args: &IndexerArgs) -> Result<()> {
     );
 
     // Start server
+    log::info!("Starting server at {}", format!("127.0.0.1:{}", args.endpoint));
     let server = HttpServerBuilder::default()
         .build(format!("127.0.0.1:{}", args.endpoint))
         .await
         .context("Failed to build HTTP server")?;
 
     let server_addr = server.local_addr()?;
-
-    // Start the server and handle errors gracefully
-    let server_handle = server.start(IndexerServerImpl.into_rpc())?;
     log::info!("Indexer service running at {}", server_addr);
 
-    // Wait for shutdown signal
-    signal::ctrl_c().await.context("Failed to listen for shutdown signal")?;
-    log::info!("Received shutdown signal");
+    // Start the server and wait indefinitely
+    let server_handle = server.start(IndexerServerImpl.into_rpc())?;
 
-    // Shutdown the server
-    server_handle.stop()?;
-    log::info!("Server shutdown complete");
+    // Use tokio::signal to handle shutdown gracefully
+    match tokio::signal::ctrl_c().await {
+        Ok(()) => {
+            log::info!("Received shutdown signal, stopping server...");
+            server_handle.stop()?;
+        }
+        Err(err) => {
+            log::error!("Unable to listen for shutdown signal: {}", err);
+            server_handle.stop()?;
+            return Err(err.into());
+        }
+    }
+
+    // Keep the main thread alive
+    std::future::pending::<()>().await;
 
     Ok(())
 }

@@ -2,6 +2,7 @@ use ethers::types::{Address, H256, U256};
 use serde::{Deserialize, Serialize};
 use std::collections::HashSet;
 use std::net::IpAddr;
+use libp2p::Multiaddr;
 
 use crate::core::merkle::proof::Proof;
 use crate::common::shard::ShardConfig;
@@ -112,7 +113,7 @@ pub struct PeerConnectionStatus {
 pub struct PeerInfo {
     pub client: Client,
     pub connection_status: PeerConnectionStatus,
-    pub listening_addresses: Vec<Vec<u8>>,
+    pub listening_addresses: Vec<Multiaddr>,
     pub seen_ips: HashSet<IpAddr>,
     pub is_trusted: bool,
     pub connection_direction: Option<String>, // Incoming/Outgoing
