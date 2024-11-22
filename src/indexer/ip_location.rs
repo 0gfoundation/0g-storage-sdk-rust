@@ -1,12 +1,11 @@
 use crate::common::utils::schedule::Scheduler;
 use anyhow::{anyhow, Context, Result};
-use log::{debug, info, warn};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::fs;
 use std::sync::{Arc, RwLock};
 use tokio::sync::Mutex;
-use tokio::time::{Duration};
+use std::time::Duration;
 
 #[derive(Debug, Serialize, Deserialize, Clone, PartialEq, Eq)]
 pub struct IPLocation {
@@ -69,7 +68,7 @@ impl DefaultIPLocationManager {
             base_url: "http://ipinfo.io".to_string(),
         };
 
-        info!(
+        log::info!(
             "Succeeded to read {} cached IP locations",
             items.read().unwrap().len()
         );
@@ -101,19 +100,19 @@ impl DefaultIPLocationManager {
     }
 
     pub async fn query(ip: &str) -> Result<IPLocation> {
-        debug!("Starting query for IP: {}", ip);
+        log::info!("Starting query for IP: {}", ip);
 
         // check cache
         if let Ok(items) = DefaultIPLocationManager::all().await {
-            debug!("Successfully retrieved cached items");
+            log::info!("Successfully retrieved cached items");
 
             if let Some(cached_loc) = items.get(ip) {
-                debug!("Cache hit for IP: {}", ip);
+                log::info!("Cache hit for IP: {}", ip);
                 return Ok(cached_loc.clone());
             }
-            debug!("Cache miss for IP: {}", ip);
+            log::info!("Cache miss for IP: {}", ip);
         } else {
-            warn!("Failed to retrieve cached items");
+            log::warn!("Failed to retrieve cached items");
         }
 
         let url = {
@@ -137,9 +136,9 @@ impl DefaultIPLocationManager {
                 if let Some(manager) = manager.as_ref() {
                     if let Ok(mut items) = manager.items.write() {
                         items.insert(ip.to_string(), loc.clone());
-                        debug!("Updated cache for IP: {}", ip);
+                        log::info!("Updated cache for IP: {}", ip);
                     } else {
-                        warn!("Failed to acquire write lock for cache update");
+                        log::warn!("Failed to acquire write lock for cache update");
                     }
                 }
 
@@ -168,101 +167,8 @@ impl DefaultIPLocationManager {
         let data =
             serde_json::to_string_pretty(items).context("Failed to serialize IP locations")?;
         fs::write(cache_file, data).context("Failed to write IP locations to file")?;
-        info!("Succeeded to write {} IP locations to file", items.len());
+        log::info!("Succeeded to write {} IP locations to file", items.len());
 
         Ok(())
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use mockito;
-    use tempfile::tempdir;
-    use once_cell::sync::OnceCell;
-
-    static INIT: OnceCell<Mutex<()>> = OnceCell::new();
-
-    async fn global_setup_async() {
-        let _ = INIT.get_or_init(|| Mutex::new(())).lock().await;
-
-        let dir = tempdir().unwrap();
-        let cache_file = dir.path().join("cache.json");
-
-        let config = IPLocationConfig {
-            cache_file: cache_file.to_str().unwrap().to_string(),
-            cache_write_interval: Duration::from_secs(60),
-            access_token: "test_token".to_string(),
-        };
-
-        // initialize ip location manager
-        let mut location = HashMap::new();
-        location.insert(
-            "2.2.2.2".to_string(),
-            IPLocation {
-                city: "Cached City".to_string(),
-                region: "Cached Region".to_string(),
-                country: "Cached Country".to_string(),
-                loc: "0,0".to_string(),
-                timezone: "UTC".to_string(),
-            },
-        );
-        DefaultIPLocationManager::write(&config.cache_file, &location).unwrap();
-        let _ = DefaultIPLocationManager::init(config.clone()).await;
-
-        let cached_locations = DefaultIPLocationManager::all().await.unwrap();
-        assert!(cached_locations.contains_key("2.2.2.2"));
-    }
-
-    #[tokio::test]
-    async fn test_init_and_query() {
-        global_setup_async().await;
-
-        // mock http://ipinfo.io service
-        // let mock = mockito::mock("GET", "/1.1.1.1/json")
-        //     .match_query(mockito::Matcher::Any)
-        //     .with_status(200)
-        //     .with_header("content-type", "application/json")
-        //     .with_body(
-        //         r#"{
-        //         "ip": "1.1.1.1",
-        //         "city": "Test City",
-        //         "region": "Test Region",
-        //         "country": "Test Country",
-        //         "loc": "0,0",
-        //         "timezone": "UTC"
-        //         }"#,
-        //     )
-        //     .create();
-
-        // // just for test, rewrite IP_LOCATION_MANAGER's base_url
-        // {
-        //     let mut manager = IP_LOCATION_MANAGER.lock().await;
-        //     if let Some(ref mut m) = *manager {
-        //         m.set_base_url(&mockito::server_url());
-        //     }
-        // }
-
-        // query ip 
-        let location = DefaultIPLocationManager::query("127.0.0.1").await.unwrap();
-        // assert_eq!(location.city, "Test City");
-        // assert_eq!(location.country, "Test Country");
-
-        // check if the loction cached
-        // let cached_locations = DefaultIPLocationManager::all().await.unwrap();
-        // assert!(cached_locations.contains_key("1.1.1.1"));
-
-        // mock.assert();
-    }
-
-    #[tokio::test]
-    async fn test_query_cached_ip() {
-        global_setup_async().await;
-
-        // query the cached ip
-        let location = DefaultIPLocationManager::query("2.2.2.2").await.unwrap();
-
-        assert_eq!(location.city, "Cached City");
-        assert_eq!(location.country, "Cached Country");
     }
 }

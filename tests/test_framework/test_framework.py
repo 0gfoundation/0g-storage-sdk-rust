@@ -338,68 +338,6 @@ class TestFramework:
             "zgs CLI binary not found: %s" % self.cli_binary
         )
 
-    # def _upload_file_use_cli(
-    #     self,
-    #     blockchain_node_rpc_url,
-    #     contract_address,
-    #     key,
-    #     ionion_node_rpc_url,
-    #     file_to_upload,
-    # ):
-    #     self._check_cli_binary()
-        
-    #     upload_args = [
-    #         self.cli_binary,
-    #         "upload",
-    #         "--url",
-    #         blockchain_node_rpc_url,
-    #         "--contract",
-    #         contract_address,
-    #         "--key",
-    #         encode_hex(key),
-    #         "--node",
-    #         ionion_node_rpc_url,
-    #         "--log-level",
-    #         "debug",
-    #         "--gas-limit",
-    #         "10000000",
-    #         "--file",
-    #     ]
-
-    #     output = tempfile.NamedTemporaryFile(dir=self.root_dir, delete=False, prefix="zgs_client_output_")
-    #     output_name = output.name
-    #     output_fileno = output.fileno()
-
-    #     try:
-    #         proc = subprocess.Popen(
-    #             upload_args + [file_to_upload.name],
-    #             text=True,
-    #             stdout=output_fileno,
-    #             stderr=output_fileno,
-    #         )
-            
-    #         return_code = proc.wait(timeout=60)
-
-    #         output.seek(0)
-    #         lines = output.readlines()
-    #         for line in lines:
-    #             line = line.decode("utf-8")
-    #             self.log.debug("line: %s", line)
-    #             if "root" in line:
-    #                 filtered_line = re.sub(r'\x1b\[([0-9,A-Z]{1,2}(;[0-9]{1,2})?(;[0-9]{3})?)?[m|K]?', '', line)
-    #                 index = filtered_line.find("root=")
-    #                 if index > 0:
-    #                     root = filtered_line[index + 5 : index + 5 + 66]
-    #     except Exception as ex:
-    #         self.log.error("Failed to upload file via CLI tool, output: %s", output_name)
-    #         raise ex
-    #     finally:
-    #         output.close()
-
-    #     assert return_code == 0, "%s upload file failed, output: %s, log: %s" % (self.cli_binary, output_name, lines)
-
-    #     return root
-
     def __submit_file__(self, chunk_data: bytes) -> str:
         submissions, data_root = create_submission(chunk_data)
         self.contract.submit(submissions)

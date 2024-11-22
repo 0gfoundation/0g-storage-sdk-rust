@@ -141,12 +141,12 @@ mod tests {
 
         // Create temp file for testing
         let mut tmp_file = NamedTempFile::new().unwrap();
-        log::info!("file size: {}", tmp_file.as_file().metadata().unwrap().len());
+        log::info!("File size: {}", tmp_file.as_file().metadata().unwrap().len());
 
         // Extend file with metadata
         let mut md = Metadata::new(test_hash, 12345);
         md.extend(tmp_file.as_file_mut()).unwrap();
-        log::info!("file size: {}", tmp_file.as_file().metadata().unwrap().len());
+        log::info!("File size: {}", tmp_file.as_file().metadata().unwrap().len());
 
         // Check file size after metadata extended
         let file_size = tmp_file.as_file().metadata().unwrap().len();

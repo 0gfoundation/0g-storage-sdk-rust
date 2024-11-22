@@ -81,9 +81,9 @@ class FileUploadDownloadTest(ClientTestFramework):
 
         def check_file_finalized(client, root):
             file_info = client.zgs_get_file_info(root)
-            print(f"File info from {client.rpc_url} is {file_info}")  # 打印详细文件信息
-            print(f"Uploaded Segment Number: {file_info.get('uploadedSegNum')}")  # 打印段数
-            print(f"File finalized status: {file_info.get('finalized')}")  # 打印完成状态
+            print(f"File info from {client.rpc_url} is {file_info}")   # print file info
+            print(f"Uploaded Segment Number: {file_info.get('uploadedSegNum')}")  # print uploaded segment number
+            print(f"File finalized status: {file_info.get('finalized')}")  # print finalized status
             return file_info and file_info.get("finalized", False)
 
 

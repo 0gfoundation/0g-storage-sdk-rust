@@ -4,7 +4,6 @@ use ethers::types::H256;
 
 use crate::transfer::uploader::{Uploader, Web3Client};
 use crate::cmd::upload::UploadOption;
-use crate::common::options::LogOption;
 use crate::node::client_zgs::ZgsClient;
 use super::builder::StreamDataBuilder;
 use crate::core::in_mem::DataInMemory;
@@ -57,8 +56,7 @@ impl Batcher {
         // Create uploader
         let uploader = Uploader::new(
             self.web3_client.clone(),
-            self.clients.clone(),
-            &LogOption::default(),
+            self.clients.clone()
         ).await.context("Failed to create uploader")?;
 
         // Prepare upload options
@@ -88,6 +86,4 @@ impl Batcher {
         self.stream_data_builder.set_version(version);
         self
     }
-
-    // Add other forwarding methods as needed...
 }

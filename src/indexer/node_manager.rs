@@ -1,5 +1,4 @@
 use anyhow::{anyhow, Result};
-use log::{debug, info, warn};
 use std::collections::HashMap;
 use std::sync::{Arc, RwLock};
 use std::time::{Duration, Instant};
@@ -53,13 +52,13 @@ impl NodeManager {
                             since: chrono::Utc::now().timestamp(),
                         });
                     } else {
-                        debug!(
+                        log::warn!(
                             "Invalid shard config retrieved from trusted storage node {}: {:?}",
                             client.url, config
                         );
                     }
                 }
-                Err(e) => debug!(
+                Err(e) => log::error!(
                     "Failed to retrieve shard config from trusted storage node {}, error: {}",
                     client.url, e
                 ),
@@ -77,10 +76,10 @@ impl NodeManager {
         for node in nodes {
             let ip = parse_ip(node);
             if let Err(e) = DefaultIPLocationManager::query(&ip).await {
-                warn!("Failed to query IP location for {}: {}", ip, e);
+                log::warn!("Failed to query IP location for {}: {}", ip, e);
             }
 
-            let client = Arc::new(ZgsClient::new(node)?);
+            let client = Arc::new(ZgsClient::new(node).await?);
             self.trusted.write().unwrap().insert(node.clone(), client);
         }
         Ok(())
@@ -96,7 +95,7 @@ impl NodeManager {
             .await?;
 
         if let Some(peers) = peers {
-            debug!(
+            log::info!(
                 "Succeeded to retrieve {} peers from storage node in {:?}",
                 peers.len(),
                 start.elapsed()
@@ -125,13 +124,13 @@ impl NodeManager {
 
                     match self.update_node(&url).await {
                         Ok(node) => {
-                            debug!(
+                            log::info!(
                                 "New peer discovered: url={}, shard={:?}, latency={}",
                                 url, node.config, node.latency
                             );
                             num_new += 1;
                         }
-                        Err(e) => debug!("Failed to add new peer {}: {}", url, e),
+                        Err(e) => log::error!("Failed to add new peer {}: {}", url, e),
                     }
 
                     break;
@@ -139,7 +138,7 @@ impl NodeManager {
             }
 
             if num_new > 0 {
-                info!("{} new peers discovered", num_new);
+                log::info!("{} new peers discovered", num_new);
             }
         }
 
@@ -149,10 +148,10 @@ impl NodeManager {
     async fn update_node(&self, url: &str) -> Result<ShardedNode> {
         let ip = parse_ip(url);
         if let Err(e) = DefaultIPLocationManager::query(&ip).await {
-            warn!("Failed to query IP location for {}: {}", ip, e);
+            log::error!("Failed to query IP location for {}: {}", ip, e);
         }
 
-        let client = ZgsClient::new(url)?;
+        let client = ZgsClient::new(url).await?;
         let start = Instant::now();
         let config = client.get_shard_config().await?;
 
@@ -182,7 +181,7 @@ impl NodeManager {
             return Ok(());
         }
 
-        info!("Begin to update shard config for {} nodes", urls.len());
+        log::info!("Begin to update shard config for {} nodes", urls.len());
 
         let start = Instant::now();
 
@@ -190,7 +189,7 @@ impl NodeManager {
             match self.update_node(&url).await {
                 Ok(_) => {}
                 Err(e) => {
-                    debug!(
+                    log::error!(
                         "Failed to update shard config for {}, removing from cache: {}",
                         url, e
                     );
@@ -199,7 +198,7 @@ impl NodeManager {
             }
         }
 
-        info!(
+        log::info!(
             "Completed updating shard config for {} nodes in {:?}",
             urls.len(),
             start.elapsed()
@@ -235,7 +234,7 @@ impl DefaultNodeManger {
 
         if let Some(manager) = manager_guard.as_mut() {
             if !config.discovery_node.is_empty() {
-                manager.discovery_node = Some(AdminClient::new(&config.discovery_node)?);
+                manager.discovery_node = Some(AdminClient::new(&config.discovery_node).await?);
             }
 
             manager.discovery_ports = config.discovery_ports.clone();

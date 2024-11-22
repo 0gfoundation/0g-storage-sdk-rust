@@ -1,4 +1,3 @@
-use std::convert::TryInto;
 use sha2::{Sha256, Digest};
 use ethers::types::{H256, Address};
 use thiserror::Error;

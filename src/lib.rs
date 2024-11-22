@@ -9,10 +9,11 @@ pub mod kv;
 
 #[cfg(test)]
 mod tests {
-    // use ctor::ctor;
+    use ctor::ctor;
+    use crate::common::options::init_logging;
 
-    // #[ctor]
-    // fn setup() {
-    //     env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("info")).init();
-    // }
+    #[ctor]
+    fn setup() {
+        init_logging("info", true).unwrap();
+    }
 }

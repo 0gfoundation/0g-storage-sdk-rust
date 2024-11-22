@@ -5,13 +5,12 @@ use std::ops::Deref;
 use thiserror::Error;
 use serde_json::json;
 
-use crate::common::options::LogOption;
 use crate::common::rpc::{
     client::{validate_url, RpcClient},
     error::{RpcError, ZgRpcResult},
 };
 use crate::node::types::ValueSegment;
-
+use crate::common::options::GLOBAL_OPTION;
 use super::types::Segment;
 
 #[derive(Error, Debug)]
@@ -24,8 +23,7 @@ pub enum KvClientError {
 
 #[derive(Debug, Clone)]
 pub struct KvClient {
-    pub client: RpcClient,
-    pub option: LogOption,
+    pub client: RpcClient
 }
 
 impl Deref for KvClient {
@@ -38,11 +36,11 @@ impl Deref for KvClient {
 
 impl KvClient {
     /// Initialize a new KV client
-    pub fn new(url: &str) -> Result<Self> {
+    pub async fn new(url: &str) -> Result<Self> {
         let url = validate_url(url)?;
-        let client = RpcClient::new(&url)?;
-        let option = LogOption::default();
-        Ok(Self { client, option })
+        let rpc_config = GLOBAL_OPTION.lock().await.rpc_config.clone();
+        let client = RpcClient::new(&url, &rpc_config)?;
+        Ok(Self { client })
     }
 
     /// Call kv_getValue RPC to query the value of a key
@@ -85,28 +83,3 @@ impl KvClient {
             })
     }
 }
-
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::common::utils::pad_to_32_bytes;
-
-    #[tokio::test]
-    async fn test_get_value() {
-        let client = KvClient::new("http://47.251.78.46:6789").unwrap();
-        let stream_id =
-        H256::from_slice(pad_to_32_bytes("0xc77b304529058d2a7b8679d3113b7e93".trim_start_matches("0x")).unwrap().as_slice());
-        let key = Segment("key1".as_bytes().to_vec());
-        let result = client.get_value(stream_id, key, 0, 100, None).await;
-
-        match result {
-            Ok(peer_info) => {
-                println!("value: {:?}", peer_info);
-            }
-            Err(e) => {
-                eprintln!("Failed to get value: {:?}", e);
-            }
-        }
-    }
-}  

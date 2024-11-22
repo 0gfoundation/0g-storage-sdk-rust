@@ -55,7 +55,6 @@ impl FlowContract {
             tx_builder = tx_builder.gas(gas_limit);
         }
         tx_builder = tx_builder.value(fee);
-        log::debug!("tx builder: {:?}", tx_builder);
         let pending_tx = tx_builder.send().await?;
         Ok(pending_tx.tx_hash())
     }
@@ -77,7 +76,6 @@ impl FlowContract {
             tx_builder = tx_builder.gas(gas_limit);
         }
         tx_builder = tx_builder.value(total_fee);
-        log::debug!("tx builder: {:?}", tx_builder);
         let pending_tx = tx_builder.send().await?;
 
         Ok(pending_tx.tx_hash())

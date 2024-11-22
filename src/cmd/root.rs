@@ -1,40 +1,71 @@
+use anyhow::Result;
 use clap::{Parser, Subcommand};
-use super::upload::UploadArgs;
+use lazy_static::lazy_static;
+use log::LevelFilter;
+use std::time::Duration;
+use tokio::sync::Mutex;
+
 use super::download::DownloadArgs;
 use super::generate_file::GenerateArgs;
 use super::indexer::IndexerArgs;
-use super::kv_write::KvWriteArgs;
 use super::kv_read::KvReadArgs;
+use super::kv_write::KvWriteArgs;
+use super::upload::UploadArgs;
+use crate::common::utils::duration_from_str;
+
+
 #[derive(Parser)]
-#[command(author, version, about = "ZeroGStorage client to interact with ZeroGStorage network")]
+#[command(
+    author,
+    version,
+    about = "ZeroGStorage client to interact with ZeroGStorage network"
+)]
 #[command(propagate_version = true)]
 pub struct Cli {
     #[command(subcommand)]
     pub command: Option<Commands>,
 
-    #[arg(long, value_name = "UINT", help = "Custom gas limit to send transaction")]
-    gas_limit: Option<u64>,
+    #[arg(
+        long,
+        value_name = "UINT",
+        help = "Custom gas limit to send transaction"
+    )]
+    pub gas_limit: Option<u64>,
 
-    #[arg(long, value_name = "UINT", help = "Custom gas price to send transaction")]
-    gas_price: Option<u64>,
+    #[arg(
+        long,
+        value_name = "UINT",
+        help = "Custom gas price to send transaction"
+    )]
+    pub gas_price: Option<u64>,
 
-    #[arg(long, help = "Force to disable colorful logs")]
-    log_color_disabled: bool,
+    #[arg(long, default_value = "false", help = "Force to disable colorful logs")]
+    pub log_color_disabled: bool,
 
-    #[arg(long, value_name = "STRING", default_value = "info", help = "Log level (default \"info\")")]
-    log_level: String,
+    #[arg(
+        long,
+        value_name = "STRING",
+        default_value = "info",
+        help = "Log level (default info)"
+    )]
+    pub log_level: String,
 
-    #[arg(long, value_name = "INT", default_value = "5", help = "Retry count for rpc request (default 5)")]
-    rpc_retry_count: i32,
+    #[arg(
+        long,
+        value_name = "INT",
+        default_value = "5",
+        help = "Retry count for rpc request (default 5)"
+    )]
+    pub rpc_retry_count: i32,
 
-    #[arg(long, value_name = "DURATION", default_value = "5s", help = "Retry interval for rpc request (default 5s)")]
-    rpc_retry_interval: String,
+    #[arg(long, value_name = "DURATION", value_parser = duration_from_str, default_value = "5", help = "Retry interval for rpc request (default 5s)")]
+    pub rpc_retry_interval: Duration,
 
-    #[arg(long, value_name = "DURATION", default_value = "30s", help = "Timeout for single rpc request (default 30s)")]
-    rpc_timeout: String,
+    #[arg(long, value_name = "DURATION", value_parser = duration_from_str, default_value = "30", help = "Timeout for single rpc request (default 30s)")]
+    pub rpc_timeout: Duration,
 
-    #[arg(long, help = "Enable log for web3 RPC")]
-    web3_log_enabled: bool,
+    #[arg(long, default_value = "false", help = "Enable log for web3 RPC")]
+    pub web3_log_enabled: bool,
 }
 
 #[derive(Subcommand)]

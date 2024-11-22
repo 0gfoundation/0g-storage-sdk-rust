@@ -1,14 +1,13 @@
-use anyhow::{Context, Result, bail};
+use anyhow::{bail, Context, Result};
 use ethers::types::U256;
 use std::env;
 use std::sync::Arc;
+use std::time::Duration;
 
+use zg_storage_client::common::options::{init_global_config, init_logging};
 use zg_storage_client::cmd::upload::{FinalityRequirement, UploadOption};
 use zg_storage_client::common::blockchain::rpc::must_new_web3;
-use zg_storage_client::core::{
-    dataflow::merkle_tree,
-    in_mem::DataInMemory,
-};
+use zg_storage_client::core::{dataflow::merkle_tree, in_mem::DataInMemory};
 use zg_storage_client::indexer::client::IndexerClient;
 
 async fn run_test() -> Result<()> {
@@ -19,14 +18,25 @@ async fn run_test() -> Result<()> {
     let chain_url = &args[1];
     let zgs_node_urls: Vec<&str> = args[2].split(',').collect();
     let indexer_url = &args[3];
-    
+
     let w3client = must_new_web3(chain_url, key).await;
 
     let data = DataInMemory::new("indexer_test_data".as_bytes().to_vec())
         .context("Failed to initialize data")?;
 
-    let indexer_client =
-        IndexerClient::new(indexer_url).context("Failed to initialize indexer client")?;
+    init_global_config(
+        None,
+        None,
+        false,
+        100,
+        Duration::from_secs(1),
+        Duration::from_secs(600),
+    )
+    .await?;
+
+    let indexer_client = IndexerClient::new(indexer_url)
+        .await
+        .context("Failed to initialize indexer client")?;
 
     let opt = UploadOption {
         tags: vec![],

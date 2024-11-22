@@ -1,7 +1,6 @@
 use std::fs::{File, OpenOptions, rename};
-use std::path::{Path, PathBuf};
-use std::io::{Read, Write, Seek, SeekFrom};
-use anyhow::{Result, Context, bail, ensure};
+use std::path::PathBuf;
+use anyhow::{Result, Context, ensure};
 use ethers::types::H256;
 use super::metadata::Metadata;
 

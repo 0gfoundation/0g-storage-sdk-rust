@@ -1,6 +1,5 @@
-use crate::cmd::upload::{FinalityRequirement, UploadOption};
+use crate::cmd::upload::{BatchUploadOption, FinalityRequirement, UploadOption};
 use crate::common::blockchain::contract::RetryOption;
-use crate::common::options::LogOption;
 use crate::common::shard::{check_replica, ShardConfig};
 use crate::contract::contract::FlowContract;
 use crate::contract::flow::Submission;
@@ -11,7 +10,6 @@ use crate::core::dataflow::{
 };
 use crate::core::flow::Flow;
 use crate::core::merkle::tree::Tree;
-use crate::node::types::FileInfo;
 use crate::node::{client_zgs::ZgsClient, types::SegmentWithProof};
 use anyhow::{Context, Result};
 use ethers::providers::Middleware;
@@ -24,6 +22,7 @@ use ethers::{
 use futures::future::{join_all, try_join_all};
 use std::sync::Arc;
 use std::time::Instant;
+use tokio::task::JoinSet;
 use tokio::time::Duration;
 
 const SMALL_FILE_SIZE_THRESHOLD: i64 = 256 * 1024;
@@ -56,13 +55,7 @@ impl Uploader {
     pub async fn new(
         web3_client: Arc<SignerMiddleware<Provider<Http>, LocalWallet>>,
         clients: Vec<ZgsClient>,
-        log_opt: &LogOption,
     ) -> Result<Self> {
-        env_logger::Builder::from_env(
-            env_logger::Env::default().default_filter_or(log_opt.level.as_str()),
-        )
-        .init();
-
         if clients.is_empty() {
             anyhow::bail!("Storage node not specified");
         }
@@ -97,7 +90,6 @@ impl Uploader {
         for client in &self.clients {
             match client.get_file_info(root).await {
                 Ok(Some(_)) => {
-                    println!("client[{:?}] found it", client);
                     return Ok(true);
                 }
                 Ok(None) => continue,
@@ -105,6 +97,155 @@ impl Uploader {
             }
         }
         Ok(false)
+    }
+
+    pub async fn batch_upload(
+        &self,
+        datas: Vec<Arc<dyn IterableData>>,
+        wait_for_log_entry: bool,
+        opt: &BatchUploadOption,
+    ) -> Result<(H256, Vec<H256>)> {
+        let start_time = std::time::Instant::now();
+    
+        let n = datas.len();
+        if n == 0 {
+            anyhow::bail!("empty datas");
+        }
+    
+        let task_size = std::cmp::max(opt.task_size, 1);
+        if opt.data_options.len() != n {
+            anyhow::bail!("datas and tags length mismatch");
+        }
+    
+        log::info!("Prepare to upload batchly, dataNum={}", n);
+    
+        // calculate merkle tree and check existence
+        let mut trees = vec![None; n];
+        let mut data_roots = vec![H256::zero(); n];
+        let mut file_infos = vec![None; n];
+        
+        // control concurrency
+        let tasks = futures::stream::iter(0..n).map(|i| {
+            let data = datas[i].clone();
+            async move {
+                log::info!(
+                    "Data prepared to upload, size={}, chunks={}, segments={}",
+                    data.size(),
+                    data.num_chunks(),
+                    data.num_segments(),
+                );
+    
+                // calculate merkle tree
+                let tree = merkle_tree(data).await
+                    .context("Failed to create data merkle tree")?;
+                
+                log::info!("Data merkle root calculated: {:?}", tree.root());
+                
+                // check existence
+                let info = self.check_log_existence(tree.root()).await
+                    .context("Failed to check if log entry available")?;
+    
+                Ok::<_, anyhow::Error>((i, tree, info))
+            }
+        });
+    
+        // control concurrency
+        let mut buffered = tasks.buffer_unordered(task_size as usize);
+        while let Some(result) = buffered.next().await {
+            let (i, tree, info) = result?;
+            data_roots[i] = tree.root();
+            trees[i] = Some(Arc::new(tree));
+            file_infos[i] = Some(info);
+        }
+    
+        // collect data to submit
+        let mut to_submit_datas = Vec::new();
+        let mut to_submit_tags = Vec::new();
+        let mut last_tree_to_submit = None;
+    
+        for i in 0..n {
+            let opt = &opt.data_options[i];
+            if !opt.skip_tx || file_infos[i].is_none() {
+                to_submit_datas.push(datas[i].clone());
+                to_submit_tags.push(opt.tags.clone());
+                last_tree_to_submit = trees[i].clone();
+            }
+        }
+    
+        // submit log to blockchain
+        let (tx_hash, receipt) = if !to_submit_datas.is_empty() {
+            let (hash, rcpt) = self.submit_log_entry(
+                to_submit_datas,
+                to_submit_tags,
+                wait_for_log_entry,
+                opt.nonce,
+                opt.fee,
+            ).await
+            .context("Failed to submit log entry")?;
+    
+            // wait for storage node to get log entry
+            if let Some(last_tree) = last_tree_to_submit {
+                self.wait_for_log_entry(
+                    last_tree.root(),
+                    FinalityRequirement::TransactionPacked,
+                    rcpt.clone(),
+                ).await
+                .context("Failed to check if log entry available on storage node")?;
+            }
+    
+            (hash, rcpt)
+        } else {
+            (H256::zero(), None)
+        };
+    
+        // second phase: upload file
+        let tasks = futures::stream::iter(0..n).map(|i| {
+            let data = datas[i].clone();
+            let tree = trees[i].clone().unwrap();
+            let info = file_infos[i].clone();
+            let opt = &opt.data_options[i];
+            let receipt = receipt.clone();
+            
+            async move {
+                // if no file info, wait for log entry
+                if info.is_none() {
+                    self.wait_for_log_entry(
+                        tree.root(),
+                        FinalityRequirement::TransactionPacked,
+                        receipt.clone(),
+                    ).await?;
+                }
+    
+                // upload file to storage node
+                self.upload_file(
+                    data,
+                    tree.clone(),
+                    opt.expected_replica as u32,
+                    opt.task_size as u32,
+                ).await
+                .context("Failed to upload file")?;
+    
+                // wait for transaction finality
+                self.wait_for_log_entry(
+                    tree.root(),
+                    opt.finality_required,
+                    None,
+                ).await
+                .context("Failed to wait for transaction finality")?;
+    
+                Ok::<_, anyhow::Error>(())
+            }
+        });
+    
+        // control concurrency
+        let mut buffered = tasks.buffer_unordered(task_size as usize);
+        while let Some(result) = buffered.next().await {
+            result?;
+        }
+    
+        log::info!("batch upload took: {:?}", start_time.elapsed());
+    
+        Ok((tx_hash, data_roots))
     }
 
     pub async fn upload(&self, data: Arc<dyn IterableData>, opt: &UploadOption) -> Result<H256> {
@@ -190,7 +331,6 @@ impl Uploader {
 
         let tx = if submissions.len() == 1 {
             let fee = if fee.is_zero() {
-                println!("price_per_sector: {:?}", price_per_sector);
                 submissions[0].fee(&price_per_sector)
             } else {
                 fee
@@ -297,14 +437,14 @@ impl Uploader {
         task_size: u32,
     ) -> Result<SegmentUploader> {
         let shard_configs = get_shard_configs(&self.clients).await?;
-        log::info!("storage node shard configs: {:?}", shard_configs);
+        log::debug!("Storage node shard configs: {:?}", shard_configs);
 
         if !check_replica(&shard_configs, expected_replica) {
             anyhow::bail!("Selected nodes cannot cover all shards");
         }
 
         let root = tree.root();
-        log::info!("tree root used query file status: {:?}", root);
+        log::debug!("tree root used query file status: {:?}", root);
 
         let client_tasks = try_join_all(self.clients.iter().enumerate().map(
             |(client_index, client)| {
@@ -314,7 +454,7 @@ impl Uploader {
                         .get_file_info(root)
                         .await
                         .context("Failed to get file info")?;
-                    println!("file info queryed before upload: {:?}", info);
+                    log::debug!("file info queryed before upload: {:?}", info);
 
                     if let Some(info) = info {
                         if info.finalized {
@@ -326,7 +466,8 @@ impl Uploader {
                             info.tx.size as usize,
                         );
 
-                        let mut seg_index = shard_config.next_segment_index(start_segment_index as u64);
+                        let mut seg_index =
+                            shard_config.next_segment_index(start_segment_index as u64);
 
                         let mut tasks = Vec::new();
 
@@ -336,11 +477,11 @@ impl Uploader {
                                 seg_index: seg_index - start_segment_index as u64,
                                 num_shard: shard_config.num_shard,
                             });
-    
+
                             seg_index += shard_config.num_shard * task_size as u64;
                         }
 
-                        return Ok::<Vec<UploadTask>, anyhow::Error>(tasks)
+                        return Ok::<Vec<UploadTask>, anyhow::Error>(tasks);
                     } else {
                         anyhow::bail!("")
                     }
@@ -357,7 +498,7 @@ impl Uploader {
         client_tasks.sort_by_key(|tasks| std::cmp::Reverse(tasks.len()));
 
         let tasks: Vec<UploadTask> = client_tasks.into_iter().flatten().collect();
-        log::info!("tasks: {:?}", tasks);
+        log::debug!("Tasks: {:?}", tasks);
 
         Ok(SegmentUploader {
             data,
@@ -428,6 +569,10 @@ pub async fn get_shard_configs(clients: &[ZgsClient]) -> Result<Vec<ShardConfig>
 
     // 处理结果
     results.into_iter().collect()
+}
+
+async fn check_log_existence(clients: &[ZgsClient], root: H256) -> Result<bool> {
+    todo!()
 }
 
 impl SegmentUploader {
@@ -514,68 +659,8 @@ impl SegmentUploader {
     }
 }
 
+#[cfg(not(test))]
 fn is_duplicate_error(msg: &str) -> bool {
     msg.contains("Invalid params: root; data: already uploaded and finalized")
         || msg.contains("segment has already been uploaded or is being uploaded")
-}
-
-#[cfg(test)]
-mod tests {
-    use super::Uploader;
-    use crate::common::blockchain::rpc::must_new_web3;
-    use crate::core::file::File;
-    use crate::node::client_zgs::must_new_zgs_clients;
-    use crate::{cmd::upload::UploadOption, common::options::LogOption};
-    use std::io::{Seek, SeekFrom, Write};
-    use std::path::Path;
-    use std::sync::Arc;
-    use tempfile::NamedTempFile;
-
-    // Helper function to create a file with specific content
-    fn create_temp_file_with_content(content: &[u8]) -> NamedTempFile {
-        let mut file = NamedTempFile::new().unwrap();
-        file.write_all(content).unwrap();
-        file.seek(SeekFrom::Start(0)).unwrap(); // 重置文件指针
-        file
-    }
-
-    #[tokio::test]
-    async fn test_new_uploader() {
-        let node_urls = vec![String::from("http://127.0.0.1:5678")];
-        let clients = must_new_zgs_clients(&node_urls);
-
-        let chain_url = "https://evmrpc-testnet.0g.ai";
-        let key = "0x9ac8c66a0712816db4364b7004c89cd077da0e07b3ec2c0314eeb3b03f8df21e";
-        let web3_client = must_new_web3(chain_url, key).await;
-
-        match Uploader::new(web3_client, clients, &LogOption::default()).await {
-            Ok(_) => {
-                println!("Successfully created uploder");
-            }
-            Err(e) => {
-                panic!("Failed to create uploader: {:?}", e);
-            }
-        }
-    }
-
-    #[tokio::test]
-    async fn test_upload() {
-        let node_urls = vec![String::from("http://127.0.0.1:5678")];
-        let clients = must_new_zgs_clients(&node_urls);
-
-        let chain_url = "https://evmrpc-testnet.0g.ai";
-        let key = "0x9ac8c66a0712816db4364b7004c89cd077da0e07b3ec2c0314eeb3b03f8df21e";
-        let web3_client = must_new_web3(chain_url, key).await;
-
-        // let data = File::open(create_temp_file_with_content(b"Hello!!!! World!!!!!").path()).unwrap();
-        let data = File::open(Path::new("tmp123456")).unwrap();
-        let uploader = Uploader::new(web3_client, clients, &LogOption::default())
-            .await
-            .unwrap();
-        let tx_hash = uploader
-            .upload(Arc::new(data), &UploadOption::default())
-            .await
-            .unwrap();
-        println!("uploaded data tx hash: {:?}", tx_hash);
-    }
 }

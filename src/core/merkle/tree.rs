@@ -14,7 +14,7 @@ impl Tree {
     }
 
     pub fn proof_at(&self, i: usize) -> Proof {
-        assert!(i < self.leaf_nodes.len(), "index out of bound");
+        assert!(i < self.leaf_nodes.len(), "Index out of bound");
 
         // only single root node
         if self.leaf_nodes.len() == 1 {

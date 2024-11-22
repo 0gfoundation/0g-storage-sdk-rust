@@ -1,12 +1,10 @@
 use super::download::download_file::DownloadingFile;
-use crate::common::options::LogOption;
 use crate::common::shard::ShardConfig;
 use crate::core::dataflow::{
-    merkle_tree, num_splits, padded_segment_root, segment_root, DEFAULT_CHUNK_SIZE,
+    merkle_tree, num_splits, padded_segment_root, DEFAULT_CHUNK_SIZE,
     DEFAULT_SEGMENT_MAX_CHUNKS, DEFAULT_SEGMENT_SIZE,
 };
 use crate::core::file::File;
-use crate::core::flow::compute_padded_size;
 use crate::node::client_zgs::ZgsClient;
 use crate::node::types::FileInfo;
 
@@ -21,12 +19,7 @@ pub struct Downloader {
 }
 
 impl Downloader {
-    pub fn new(clients: Vec<ZgsClient>, log_opt: &LogOption) -> Result<Self> {
-        env_logger::Builder::from_env(
-            env_logger::Env::default().default_filter_or(log_opt.level.as_str()),
-        )
-        .init();
-
+    pub fn new(clients: Vec<ZgsClient>) -> Result<Self> {
         if clients.is_empty() {
             anyhow::bail!("Storage node not specified");
         }
@@ -191,11 +184,9 @@ impl<'a> SegmentDownloader<'a> {
 
     async fn download(&mut self) -> Result<()> {
         let num_tasks = self.end_segment_index - self.start_segment_index + 1 - self.offset;
-        // println!("num_tasks: {}", num_tasks);
         let futures = (0..num_tasks).map(|task| self.download_segment(task));
 
         let results = try_join_all(futures).await?;
-        // println!("result: {:?}", results);
         for result in results {
             self.file.write(&result)?;
         }
@@ -231,7 +222,6 @@ impl<'a> SegmentDownloader<'a> {
                     .download_segment_by_tx_seq(self.tx_seq, start_index as u64, end_index as u64)
                     .await?
                 {
-                    // println!("segment: {:?}", data);
                     Some(data.0)
                 } else {
                     None
@@ -256,7 +246,6 @@ impl<'a> SegmentDownloader<'a> {
                 }
 
                 log::info!("Succeeded to download segment");
-                // println!("final segment: {:?}", segment);
                 return Ok(segment);
             }
         }
@@ -277,8 +266,6 @@ impl<'a> SegmentDownloader<'a> {
         let segment = client
             .download_segment_with_proof_by_tx_seq(tx_seq, segment_index)
             .await?;
-
-        // println!("segment_with_proof: {:?}", segment);
 
         if let Some(segment) = segment {
             let expected_data_len = (end_index - start_index) * DEFAULT_CHUNK_SIZE as u64;

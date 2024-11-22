@@ -1,6 +1,5 @@
 use anyhow::{Context, Result};
 use clap::Args;
-use tokio::signal;
 use jsonrpsee::http_server::HttpServerBuilder;
 use std::path::PathBuf;
 use std::time::Duration;
@@ -11,6 +10,7 @@ use crate::indexer::{
     ip_location::{DefaultIPLocationManager, IPLocationConfig},
     node_manager::{DefaultNodeManger, NodeManagerConfig},
 };
+use crate::common::utils::duration_from_str;
 
 #[derive(Args)]
 pub struct IndexerArgs {
@@ -26,16 +26,18 @@ pub struct IndexerArgs {
     #[arg(
         long,
         default_value = "600",
+        value_parser = duration_from_str,
         help = "Interval to discover peers in network (seconds)"
     )]
-    pub discover_interval: u64,
+    pub discover_interval: Duration,
 
     #[arg(
         long,
         default_value = "600",
+        value_parser = duration_from_str,
         help = "Interval to update shard config of discovered peers (seconds)"
     )]
-    pub update_interval: u64,
+    pub update_interval: Duration,
 
     #[arg(
         long,
@@ -55,9 +57,10 @@ pub struct IndexerArgs {
     #[arg(
         long,
         default_value = "600",
+        value_parser = duration_from_str,
         help = "Interval to write IP locations to cache file (seconds)"
     )]
-    pub ip_location_cache_interval: u64,
+    pub ip_location_cache_interval: Duration,
 
     #[arg(long, help = "Access token to retrieve IP location from ipinfo.io")]
     pub ip_location_token: Option<String>,
@@ -65,12 +68,13 @@ pub struct IndexerArgs {
     #[arg(
         long,
         default_value = "86400",
+        value_parser = duration_from_str,
         help = "Validity period of location information (seconds)"
     )]
-    pub file_location_cache_expiry: u64,
+    pub file_location_cache_expiry: Duration,
 
     #[arg(long, default_value = "100000", help = "Size of file location cache")]
-    pub file_location_cache_size: usize,
+    pub file_location_cache_size: u64,
 
     #[arg(
         long,
@@ -88,26 +92,25 @@ pub struct IndexerArgs {
 }
 
 pub async fn run_indexer(args: &IndexerArgs) -> Result<()> {
-    env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("info")).init();
 
     let node_config = NodeManagerConfig {
         trusted_nodes: args.trusted.clone(),
         discovery_node: args.node.clone().unwrap_or_default(),
-        discovery_interval: Duration::from_secs(args.discover_interval),
+        discovery_interval: args.discover_interval,
         discovery_ports: args.discover_ports.clone(),
-        update_interval: Duration::from_secs(args.update_interval),
+        update_interval: args.update_interval,
     };
 
     let location_config = IPLocationConfig {
         cache_file: args.ip_location_cache_file.to_str().unwrap_or_default().to_string(),
-        cache_write_interval: Duration::from_secs(args.ip_location_cache_interval),
+        cache_write_interval: args.ip_location_cache_interval,
         access_token: args.ip_location_token.clone().unwrap_or_default(),
     };
 
     let location_cache_config = FileLocationCacheConfig {
         discovery_node: args.node.clone().unwrap_or_default(),
         discovery_ports: args.discover_ports.clone(),
-        expiry: Duration::from_secs(args.file_location_cache_expiry),
+        expiry: args.file_location_cache_expiry,
         cache_size: args.file_location_cache_size,
     };
 

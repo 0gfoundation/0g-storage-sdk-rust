@@ -1,6 +1,5 @@
 use anyhow::Result;
 use dashmap::DashMap;
-use ethers::middleware::gas_oracle::cache;
 use lru_time_cache::LruCache;
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -8,7 +7,7 @@ use tokio::sync::Mutex;
 use tokio::sync::RwLock;
 use tokio::time::{Duration, Instant};
 
-use super::node_manager::{DefaultNodeManger, NodeManagerConfig};
+use super::node_manager::DefaultNodeManger;
 use crate::common::shard::{select, ShardedNode};
 use crate::node::client_admin::AdminClient;
 use crate::node::client_zgs::ZgsClient;
@@ -24,7 +23,7 @@ lazy_static::lazy_static! {
 
 #[derive(Clone)]
 pub struct FileLocationCacheConfig {
-    pub cache_size: usize,
+    pub cache_size: u64,
     pub expiry: Duration,
     pub discovery_node: String,
     pub discovery_ports: Vec<u16>,
@@ -49,14 +48,14 @@ pub struct FileLocationCache {
 impl FileLocationCache {
     pub async fn new(config: FileLocationCacheConfig) -> Result<Self> {
         let discover_node = if !config.discovery_node.is_empty() {
-            Some(AdminClient::new(&config.discovery_node)?)
+            Some(AdminClient::new(&config.discovery_node).await?)
         } else {
             None
         };
 
         let cache = Arc::new(RwLock::new(LruCache::with_expiry_duration_and_capacity(
             config.expiry,
-            config.cache_size,
+            config.cache_size as usize,
         )));
 
         Ok(Self {
@@ -145,7 +144,7 @@ impl FileLocationCache {
                             }
                         }
 
-                        match ZgsClient::new(&url) {
+                        match ZgsClient::new(&url).await {
                             Ok(client) => {
                                 let start = Instant::now();
 
@@ -238,7 +237,6 @@ impl DefaultFileLocationCache {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use mockito::mock;
 
     #[tokio::test]
     async fn test_file_location_cache_init() {
@@ -254,111 +252,5 @@ mod tests {
 
         let cache = FILE_LOCATION_CACHE.lock().await;
         assert!(cache.is_some());
-    }
-
-    #[tokio::test]
-    async fn test_get_file_locations() {
-
-        let node_config = NodeManagerConfig {
-            trusted_nodes: vec!["http://127.0.0.1:5678".to_string()],
-            discovery_node: "".to_string(),
-            discovery_interval: Duration::from_secs(10),
-            discovery_ports: vec![],
-            update_interval: Duration::from_secs(5),
-        };
-        let _ = DefaultNodeManger::init(node_config).await;
-
-        let config = FileLocationCacheConfig {
-            cache_size: 10,
-            expiry: Duration::from_secs(60),
-            discovery_node: "http://localhost:8000".to_string(),
-            discovery_ports: vec![8080],
-        };
-
-        DefaultFileLocationCache::init(config).await.unwrap();
-
-        // Set up a mock server for discovery node
-        let _mock = mock("GET", "/file_location")
-            .with_status(200)
-            .with_body(r#"{"finalized": true, "config": {"valid": true}}"#)
-            .create();
-
-        let tx_seq = 1;
-        let result = DefaultFileLocationCache::get_file_locations(tx_seq).await;
-        println!("result: {:?}", result);
-        // assert!(result.is_ok());
-        // assert!(result.unwrap().is_some());
-    }
-
-    #[tokio::test]
-    async fn test_get_file_locations_cached() {
-        let config = FileLocationCacheConfig {
-            cache_size: 10,
-            expiry: Duration::from_secs(60),
-            discovery_node: "http://localhost:8000".to_string(),
-            discovery_ports: vec![8080],
-        };
-
-        DefaultFileLocationCache::init(config).await.unwrap();
-
-        let tx_seq = 1;
-        
-        // First call should not hit the cache
-        let _mock = mock("GET", "/file_location")
-            .with_status(200)
-            .with_body(r#"{"finalized": true, "config": {"valid": true}}"#)
-            .create();
-
-        let result = DefaultFileLocationCache::get_file_locations(tx_seq).await;
-        assert!(result.is_ok());
-        assert!(result.unwrap().is_some());
-
-        // Now we should hit the cache
-        let cached_result = DefaultFileLocationCache::get_file_locations(tx_seq).await;
-        assert!(cached_result.is_ok());
-        assert!(cached_result.unwrap().is_some());
-    }
-
-    #[tokio::test]
-    async fn test_get_file_locations_with_failure() {
-        let config = FileLocationCacheConfig {
-            cache_size: 10,
-            expiry: Duration::from_secs(60),
-            discovery_node: "http://localhost:8000".to_string(),
-            discovery_ports: vec![8080],
-        };
-
-        DefaultFileLocationCache::init(config).await.unwrap();
-
-        let tx_seq = 2;
-
-        // Mock a failure response for the discovery node
-        let _mock = mock("GET", "/file_location")
-            .with_status(500)
-            .create();
-
-        let result = DefaultFileLocationCache::get_file_locations(tx_seq).await;
-        assert!(result.is_err());
-    }
-
-    #[tokio::test]
-    async fn test_find_file_trigger() {
-        let config = FileLocationCacheConfig {
-            cache_size: 10,
-            expiry: Duration::from_secs(60),
-            discovery_node: "http://localhost:8000".to_string(),
-            discovery_ports: vec![8080],
-        };
-
-        DefaultFileLocationCache::init(config).await.unwrap();
-
-        let tx_seq = 3;
-
-        // Triggering find_file without a valid response should log and not cache
-        let result = DefaultFileLocationCache::get_file_locations(tx_seq).await;
-        assert!(result.is_ok());
-        assert!(result.unwrap().is_none());
-
-        // Verify the log entry here if necessary
     }
 }

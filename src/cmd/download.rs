@@ -1,7 +1,6 @@
 use crate::common::utils::duration_from_str;
-use crate::common::options::LogOption;
 use crate::indexer::client::IndexerClient;
-use crate::node::client_zgs::{must_new_zgs_clients};
+use crate::node::client_zgs::must_new_zgs_clients;
 use crate::transfer::downloader::Downloader;
 use anyhow::Result;
 use clap::Args;
@@ -35,11 +34,11 @@ pub async fn run_download(args: &DownloadArgs) -> Result<()> {
     let root = H256::from_str(&args.root)?;
 
     if let Some(indexer_url) = &args.indexer {
-        let indexer_client = IndexerClient::new(indexer_url)?;
+        let indexer_client = IndexerClient::new(indexer_url).await?;
         indexer_client.download(root, &args.file, args.proof).await?;
     } else {
-        let clients = must_new_zgs_clients(&args.node);
-        let downloader = Downloader::new(clients, &LogOption::default())?;
+        let clients = must_new_zgs_clients(&args.node).await;
+        let downloader = Downloader::new(clients)?;
         downloader.download(root, &args.file, args.proof).await?;
     }
 

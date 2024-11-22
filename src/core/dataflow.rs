@@ -5,7 +5,6 @@ use anyhow::{anyhow, Context, Result};
 use ethers::types::H256;
 use futures::future::try_join_all;
 use lazy_static::lazy_static;
-use core::num;
 use std::sync::Arc;
 use tiny_keccak::{Hasher, Keccak};
 
@@ -201,8 +200,8 @@ mod tests {
 
     #[tokio::test]
     async fn test_file_merkle_tree() {
-        let data = File::open(Path::new("tmp123456")).unwrap();
+        let data = File::open(Path::new("tests/tmp123456")).unwrap();
         let tree = merkle_tree(Arc::new(data)).await.unwrap();
-        println!("file root: {:?}", tree.root());
+        log::info!("File root: {:?}", tree.root());
     }
 }

@@ -1,25 +1,24 @@
 use crate::common::blockchain::rpc::must_new_web3;
-use crate::common::options::LogOption;
 use crate::common::utils::duration_from_str;
 use crate::core::file::File;
-use crate::indexer::client::{IndexerClient};
-use crate::node::client_zgs::{must_new_zgs_clients, ZgsClient};
+use crate::indexer::client::IndexerClient;
+use crate::node::client_zgs::must_new_zgs_clients;
 use crate::transfer::uploader::Uploader;
 use anyhow::Result;
 use clap::Args;
-use ethers::types::{H256, U256};
+use ethers::types::U256;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
 
 #[derive(Debug, Clone, Copy, PartialEq, PartialOrd, Eq)]
 pub enum FinalityRequirement {
-    FileFinalized = 0,     // 等待文件完成
-    TransactionPacked = 1, // 等待交易回执, 不等待文件完成
-    WaitNothing = 2,       // 不等待任何操作
+    FileFinalized = 0,     // wait for file finalized
+    TransactionPacked = 1, // wait for transaction packed
+    WaitNothing = 2,       // wait nothing
 }
 
-#[derive(Clone, Default)]
+#[derive(Clone, Default, Debug)]
 pub struct UploadOption {
     pub tags: Vec<u8>,
     pub finality_required: FinalityRequirement,
@@ -28,6 +27,14 @@ pub struct UploadOption {
     pub skip_tx: bool,
     pub fee: U256,
     pub nonce: U256,
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct BatchUploadOption {
+    pub fee: U256,
+    pub nonce: U256,
+    pub data_options: Vec<UploadOption>,
+    pub task_size: u64,
 }
 
 impl Default for FinalityRequirement {
@@ -73,7 +80,11 @@ pub struct UploadArgs {
     )]
     pub skip_tx: bool,
 
-    #[arg(long, help = "Wait for file finality on nodes to upload")]
+    #[arg(
+        long,
+        default_value = "false",
+        help = "Wait for file finality on nodes to upload"
+    )]
     pub finality_required: bool,
 
     #[arg(
@@ -118,11 +129,11 @@ pub async fn run_upload(args: &UploadArgs) -> Result<()> {
     let web3_client = must_new_web3(&args.url, &args.key).await;
 
     if let Some(indexer_url) = &args.indexer {
-        let indexer_client = IndexerClient::new(indexer_url)?;
+        let indexer_client = IndexerClient::new(indexer_url).await?;
         indexer_client.upload(web3_client, file, &opt).await?;
     } else {
-        let clients = must_new_zgs_clients(&args.node);
-        let uploader = Uploader::new(web3_client, clients, &LogOption::default()).await?;
+        let clients = must_new_zgs_clients(&args.node).await;
+        let uploader = Uploader::new(web3_client, clients).await?;
         uploader.upload(file, &opt).await?;
     }
     Ok(())

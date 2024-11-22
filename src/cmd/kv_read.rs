@@ -33,7 +33,7 @@ pub struct KvReadArgs {
 }
 
 pub async fn run_kv_read(args: &KvReadArgs) -> Result<HashMap<String, Vec<u8>>> {
-    let kv_client = KvClient::new(&args.node)?;
+    let kv_client = KvClient::new(&args.node).await?;
     let stream_id = H256::from_slice(pad_to_32_bytes(&args.stream_id.trim_start_matches("0x"))?.as_slice());
     let mut result  = HashMap::new(); 
 
@@ -52,7 +52,7 @@ pub async fn run_kv_read(args: &KvReadArgs) -> Result<HashMap<String, Vec<u8>>> 
                 MAX_QUERY_SIZE as u64, 
                 Some(val.version),
             ).await?;
-            // println!("seg: {:?}", seg);
+            log::debug!("seg: {:?}", seg);
             if val.version == u64::MAX {
                 val.version = seg.version;
             } else if val.version != seg.version {

@@ -1,16 +1,41 @@
 use anyhow::Result;
 use clap::Parser;
+use std::collections::HashMap;
 use tokio;
+
 use zg_storage_client::cmd::{
     download, generate_file, indexer, kv_read, kv_write,
     root::{Cli, Commands},
     upload,
 };
-use std::collections::HashMap;
+use zg_storage_client::common::options::{init_global_config, init_logging, GLOBAL_OPTION};
 
 #[tokio::main]
 async fn main() -> Result<()> {
     let cli = Cli::parse();
+    // Initialize logging based on global flags
+    init_logging(cli.log_level.as_str(), !cli.log_color_disabled)?;
+
+    // Initialize global config
+    init_global_config(
+        cli.gas_price,
+        cli.gas_limit,
+        cli.web3_log_enabled,
+        cli.rpc_retry_count,
+        cli.rpc_retry_interval,
+        cli.rpc_timeout,
+    )
+    .await?;
+
+    log::debug!(
+        "Common excution args: {:?}",
+        format!(
+            "{:?}, log_color_disabled: {:?}, log_level: {:?}",
+            GLOBAL_OPTION.lock().await,
+            cli.log_color_disabled,
+            cli.log_level
+        )
+    );
 
     match &cli.command {
         Some(Commands::Completion { shell }) => {

@@ -4,17 +4,15 @@ use std::ops::Deref;
 use std::collections::HashMap;
 
 use super::types::{PeerInfo, LocationInfo};
-use crate::common::options::LogOption;
 use crate::common::rpc::{
     client::{validate_url, RpcClient},
     error::{RpcError, ZgRpcResult},
 };
-
+use crate::common::options::GLOBAL_OPTION;
 
 #[derive(Debug, Clone)]
 pub struct AdminClient {
-    pub client: RpcClient,
-    pub option: LogOption,
+    pub client: RpcClient
 }
 
 impl Deref for AdminClient {
@@ -26,11 +24,11 @@ impl Deref for AdminClient {
 }
 
 impl AdminClient {
-    pub fn new(url: &str) -> Result<Self> {
+    pub async fn new(url: &str) -> Result<Self> {
         let url = validate_url(url)?;
-        let client = RpcClient::new(&url)?;
-        let option = LogOption::default();
-        Ok(Self { client, option })
+        let rpc_config = GLOBAL_OPTION.lock().await.rpc_config.clone();
+        let client = RpcClient::new(&url, &rpc_config)?;
+        Ok(Self { client })
     }
 
     pub async fn get_peers(&self) -> ZgRpcResult<Option<HashMap<String, PeerInfo>>> {
@@ -66,24 +64,4 @@ impl AdminClient {
             })
     }
     
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[tokio::test]
-    async fn test_rpc_get_peers() {
-        let client = AdminClient::new("https://indexer-storage-testnet-standard.0g.ai:5679").unwrap();
-        let result = client.get_peers().await;
-
-        match result {
-            Ok(peer_info) => {
-                println!("peer info: {:?}", peer_info);
-            }
-            Err(e) => {
-                eprintln!("Failed to get peer info]: {:?}", e);
-            }
-        }
-    }
 }

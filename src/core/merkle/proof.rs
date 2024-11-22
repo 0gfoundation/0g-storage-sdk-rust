@@ -15,7 +15,7 @@ impl Proof {
 
         if num_siblings == 0 {
             if self.lemma.len() != 1 {
-                return Err(anyhow!("invalid merkle proof format"));
+                return Err(anyhow!("Invalid merkle proof format"));
             }
             return Ok(());
         }
@@ -41,20 +41,20 @@ impl Proof {
         self.validate_format()?;
 
         if content_hash != self.lemma[0] {
-            return Err(anyhow!("merkle proof content mismatch"));
+            return Err(anyhow!("Merkle proof content mismatch"));
         }
 
         if self.lemma.len() > 1 && root != *self.lemma.last().unwrap() {
-            return Err(anyhow!("merkle proof root mismatch"));
+            return Err(anyhow!("Merkle proof root mismatch"));
         }
 
         let proof_pos = self.calculate_proof_position(num_leaf_nodes);
         if proof_pos != position {
-            return Err(anyhow!("merkle proof position mismatch"));
+            return Err(anyhow!("Merkle proof position mismatch"));
         }
 
         if !self.validate_root() {
-            return Err(anyhow!("failed to validate merkle proof"));
+            return Err(anyhow!("Failed to validate merkle proof"));
         }
 
         Ok(())

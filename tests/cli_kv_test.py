@@ -28,7 +28,7 @@ class KVTest(ClientTestFramework):
 
         def check_kv_commit(client, tx_seq):
             result = client.kv_get_trasanction_result(tx_seq)
-            print(f"Result info from {client.rpc_url} is {result}")  # 打印详细文件信息
+            print(f"Result info from {client.rpc_url} is {result}")   # print result info
             return result
 
 

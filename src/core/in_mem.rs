@@ -12,7 +12,7 @@ pub struct DataInMemory {
 impl DataInMemory {
     pub fn new(data: Vec<u8>) -> Result<Self> {
         if data.is_empty() {
-            return Err(anyhow!("data is empty"));
+            return Err(anyhow!("Data is empty"));
         }
 
         Ok(DataInMemory {

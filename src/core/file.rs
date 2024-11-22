@@ -194,7 +194,7 @@ mod tests {
         let result = File::merkle_root(file.path()).await;
         assert!(result.is_ok(), "Merkle root calculation should succeed");
         let root = result.unwrap();
-        println!("File root is: {:?}", root);
+        log::info!("File root is: {:?}", root);
     }
 
     #[test]
@@ -202,7 +202,7 @@ mod tests {
         let content = b"12345678901234567890"; // 20 bytes
         let file = create_temp_file_with_content(content);
         let file_struct = File::open(file.path()).unwrap();
-        println!("Padded length: {}", file_struct.padded_size);
+        log::info!("Padded length: {}", file_struct.padded_size);
 
         let mut iterator = file_struct.iterate(0, 256, true);
         let mut collected_data = Vec::new();

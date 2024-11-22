@@ -49,12 +49,12 @@ mod tests {
 
         match new_web3(url, key).await {
             Ok(client) => {
-                println!("Successfully created Web3 client");
+                log::info!("Successfully created Web3 client");
 
-                // 尝试获取当前区块号
+                // get current block number
                 match client.get_block_number().await {
                     Ok(block_number) => {
-                        println!("Current block number: {}", block_number);
+                        log::info!("Current block number: {}", block_number);
                         assert!(true, "Successfully retrieved block number");
                     }
                     Err(e) => {
@@ -71,64 +71,23 @@ mod tests {
     #[tokio::test]
     async fn test_must_new_web3() {
         let url = "https://evmrpc-testnet.0g.ai";
-        let key = "0x9ac8c66a0712816db4364b7004c89cd077da0e07b3ec2c0314eeb3b03f8df21e";
+        let key = "0x758e4e906b7639e701c69fdcbf26bbc5001cf7e3a7ca56205d53ff88db3d3085";
 
         let client = must_new_web3(url, key).await;
 
         let address = client.address();
-        println!("Account address: {:?}", address);
+        log::info!("Account address: {:?}", address);
 
         let balance = client
             .get_balance(address, None)
             .await
             .expect("Failed to get balance");
-        println!("Account balance: {}", balance);
+        log::info!("Account balance: {}", balance);
 
         let chain_id = client
             .get_chainid()
             .await
             .expect("Failed to get chain id");
-        println!("Chain id: {}", chain_id);
+        log::info!("Chain id: {}", chain_id);
     }
-
-    // #[tokio::test]
-    // async fn test_wait_for_receipt() {
-    //     let url = "http://localhost:8545";
-    //     let key = "0xb3aa221c3203fcd1ed4821c3307edac067b3563b299bd0d3fb850d8d7932b7b4";
-    //     let client = must_new_web3(url, key).await;
-
-    //     // 获取当前区块号
-    //     let block_number = client
-    //         .get_block_number()
-    //         .await
-    //         .expect("Failed to get block number");
-    //     println!("Current block number: {}", block_number);
-
-    //     // 获取账户地址
-    //     let address = client.address();
-    //     println!("Account address: {:?}", address);
-
-    //     // 获取账户余额
-    //     let balance = client
-    //         .get_balance(address, None)
-    //         .await
-    //         .expect("Failed to get balance");
-    //     println!("Account balance: {} wei", balance);
-
-    //     // 创建一个交易请求
-    //     let tx = TransactionRequest::new()
-    //         .to("0x28d2d9EDb91D7773B36ff07a5Dd4623F310CB102") // 接收地址，这里用了一个示例地址
-    //         .value(U256::from(1000000000000000000u64)) // 1 ETH
-    //         .from(address)
-    //         .chain_id(1337u64);
-
-    //     // 发送交易
-    //     let pending_tx = client
-    //         .send_transaction(tx, None)
-    //         .await
-    //         .expect("Failed to send transaction");
-
-    //     let receipt = wait_for_receipt(client.clone(), pending_tx.tx_hash(), true, &RetryOption::default()).await;
-    //     assert!(receipt.is_ok());
-    // }
 }

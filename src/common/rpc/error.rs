@@ -67,6 +67,7 @@ pub fn invalid_params(param: &str, msg: impl std::convert::AsRef<str>) -> Error 
 mod tests {
     use super::*;
     use crate::common::rpc::client::RpcClient;
+    use crate::common::options::RpcOption;
     use anyhow::{Context, Result};
 
     async fn inner(client: &RpcClient, result_type: usize) -> Result<String> {
@@ -87,15 +88,15 @@ mod tests {
     async fn outer(client: &RpcClient, result_type: usize) -> String {
         match inner(client, result_type).await {
             Ok(_) => {
-                println!("Ok!");
+                log::info!("Ok!");
                 "Ok!".to_string()
             }
             Err(err) => {
                 if let Some(_) = err.downcast_ref::<RpcError>() {
-                    println!("Rpc error!");
+                    log::error!("Rpc error!");
                     "Rpc error!".to_string()
                 } else {
-                    println!("Other error!");
+                    log::error!("Other error!");
                     "Other error!".to_string()
                 }
             }
@@ -104,7 +105,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_rpc_error_propagation() {
-        let client = RpcClient::new("http://127.0.0.1:5678").unwrap();
+        let client = RpcClient::new("http://127.0.0.1:1234", &RpcOption::default()).unwrap();
         let ok = outer(&client, 0).await;
         assert_eq!(ok, "Ok!".to_string());
         let rpc_err = outer(&client, 1).await;

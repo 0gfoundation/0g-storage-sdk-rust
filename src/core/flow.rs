@@ -4,8 +4,7 @@ use super::dataflow::{
 use super::merkle::tree_builder::TreeBuilder;
 use crate::contract::flow::{Submission, SubmissionNode};
 use anyhow::{anyhow, Result};
-use chrono::offset;
-use ethers::types::{Bytes, H256, U256};
+use ethers::types::{Bytes, U256};
 use futures::future::try_join_all;
 use log::{debug, trace};
 use std::sync::Arc;
@@ -160,21 +159,21 @@ mod tests {
 
     #[test]
     fn test_new_flow() {
-        let upload_file = Path::new("tmp123456");
+        let upload_file = Path::new("tests/tmp123456");
         let data = File::open(upload_file).unwrap();
         let tag = "test_file".as_bytes().to_vec();
         let flow = Flow::new(Arc::new(data), tag);
-        println!("Flow: {:?}", String::from_utf8(flow.tags));
+        log::info!("Flow: {:?}", String::from_utf8(flow.tags));
     }
 
     #[tokio::test]
     async fn test_create_submission() {
-        let upload_file = Path::new("tmp123456");
+        let upload_file = Path::new("tests/tmp123456");
         let data = File::open(upload_file).unwrap();
         let tag = "test_file".as_bytes().to_vec();
         let flow = Flow::new(Arc::new(data), tag);
 
         let submission = flow.create_submission().await.unwrap();
-        println!("Submission: {:?}", submission);
+        log::info!("Submission: {:?}", submission);
     }
 }

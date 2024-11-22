@@ -105,7 +105,7 @@ pub async fn run_kv_write(args: &KvWriteArgs) -> Result<()> {
 
     let mut clients: Vec<ZgsClient> = vec![];
     if let Some(indexer_url) = &args.indexer {
-        let indexer_client = IndexerClient::new(indexer_url)?;
+        let indexer_client = IndexerClient::new(indexer_url).await?;
         clients = indexer_client
             .select_nodes(args.expected_replica as usize, &vec![])
             .await?;
@@ -115,7 +115,7 @@ pub async fn run_kv_write(args: &KvWriteArgs) -> Result<()> {
         if args.node.is_empty() {
             anyhow::bail!("At least one of --node and --indexer should not be empty");
         }
-        clients = must_new_zgs_clients(&args.node);
+        clients = must_new_zgs_clients(&args.node).await;
     }
 
     let mut batcher = Batcher::new(args.version, clients, web3_client);
@@ -128,10 +128,10 @@ pub async fn run_kv_write(args: &KvWriteArgs) -> Result<()> {
         return Err(anyhow!("no keys to write"));
     }
 
-    println!("stream_id in args: {:?}", args.stream_id);
+    log::debug!("stream_id in args: {:?}", args.stream_id);
     let stream_id =
         H256::from_slice(pad_to_32_bytes(&args.stream_id.trim_start_matches("0x"))?.as_slice());
-    println!("stream_id: {:?}", stream_id);
+    log::info!("stream_id: {:?}", stream_id);
 
     for (key, value) in args.stream_keys.iter().zip(args.stream_values.iter()) {
         batcher.set(stream_id, key.as_bytes(), value.as_bytes().to_vec());

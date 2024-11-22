@@ -187,7 +187,7 @@ mod tests {
 
         for i in 0..12 {
             sleep(Duration::from_secs(1)).await;
-            println!(
+            log::info!(
                 "Progress after {}s - Sync: {}, Async: {}",
                 i + 1,
                 sync_counter.load(Ordering::SeqCst),
@@ -198,8 +198,8 @@ mod tests {
         let sync_count = sync_counter.load(Ordering::SeqCst);
         let async_count = async_counter.load(Ordering::SeqCst);
 
-        println!("Final - Sync task executed {} times", sync_count);
-        println!("Final - Async task executed {} times", async_count);
+        log::info!("Final - Sync task executed {} times", sync_count);
+        log::info!("Final - Async task executed {} times", async_count);
 
         assert!(
             (sync_count as i32 - async_count as i32).abs() <= 2,
