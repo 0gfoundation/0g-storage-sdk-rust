@@ -55,7 +55,6 @@ mod tests {
                 match client.get_block_number().await {
                     Ok(block_number) => {
                         log::info!("Current block number: {}", block_number);
-                        assert!(true, "Successfully retrieved block number");
                     }
                     Err(e) => {
                         panic!("Failed to get block number: {:?}", e);
@@ -84,10 +83,7 @@ mod tests {
             .expect("Failed to get balance");
         log::info!("Account balance: {}", balance);
 
-        let chain_id = client
-            .get_chainid()
-            .await
-            .expect("Failed to get chain id");
+        let chain_id = client.get_chainid().await.expect("Failed to get chain id");
         log::info!("Chain id: {}", chain_id);
     }
 }

@@ -1,7 +1,7 @@
-use sha2::{Sha256, Digest};
-use ethers::types::{H256, Address};
-use thiserror::Error;
 use byteorder::{BigEndian, ByteOrder};
+use ethers::types::{Address, H256};
+use sha2::{Digest, Sha256};
+use thiserror::Error;
 
 // Constants
 const HASH_LENGTH: usize = 32;
@@ -82,11 +82,11 @@ pub struct StreamData {
 pub fn create_tags(stream_ids: &[H256]) -> Vec<u8> {
     let mut result = Vec::with_capacity(HASH_LENGTH * (1 + stream_ids.len()));
     result.extend_from_slice(STREAM_DOMAIN.as_bytes());
-    
+
     for id in stream_ids {
         result.extend_from_slice(id.as_bytes());
     }
-    
+
     result
 }
 
@@ -128,14 +128,14 @@ impl StreamData {
         if size == 0 {
             return Err(StreamError::KeyIsEmpty);
         }
-        
+
         let mut buf = [0u8; 4];
         BigEndian::write_u32(&mut buf, size as u32);
-        
+
         if buf[0] != 0 {
             return Err(StreamError::KeyTooLarge);
         }
-        
+
         Ok([buf[1], buf[2], buf[3]])
     }
 
@@ -201,7 +201,7 @@ impl StreamData {
 
 // Optional: Implement decode functionality if needed
 impl StreamData {
-    pub fn decode(data: &[u8]) -> Result<Self, StreamError> {
+    pub fn decode(_data: &[u8]) -> Result<Self, StreamError> {
         // Implementation of decode logic here
         // This would reverse the encode process
         todo!("Implement decode functionality")

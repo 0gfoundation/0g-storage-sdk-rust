@@ -4,8 +4,8 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::fs;
 use std::sync::{Arc, RwLock};
-use tokio::sync::Mutex;
 use std::time::Duration;
+use tokio::sync::Mutex;
 
 #[derive(Debug, Serialize, Deserialize, Clone, PartialEq, Eq)]
 pub struct IPLocation {
@@ -38,7 +38,7 @@ impl IPLocationManager {
         if ip == "127.0.0.1" || ip.eq_ignore_ascii_case("localhost") {
             return format!("{}/json", self.base_url);
         }
-    
+
         if self.config.access_token.is_empty() {
             format!("{}/{}/json", self.base_url, ip)
         } else {
@@ -80,7 +80,7 @@ impl DefaultIPLocationManager {
         let items_clone = items.clone();
         let scheduler = Scheduler::new();
         scheduler.schedule_sync(
-            move || Self::write(&cache_file, &items_clone.read().unwrap()).map_err(|e| e.into()),
+            move || Self::write(&cache_file, &items_clone.read().unwrap()),
             config.cache_write_interval,
             "Failed to write IP locations",
         );

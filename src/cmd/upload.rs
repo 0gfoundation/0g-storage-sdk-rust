@@ -4,18 +4,20 @@ use crate::core::file::File;
 use crate::indexer::client::IndexerClient;
 use crate::node::client_zgs::must_new_zgs_clients;
 use crate::transfer::uploader::Uploader;
-use anyhow::Result;
+use anyhow::{Context, Result};
 use clap::Args;
-use ethers::types::U256;
+use ethers::types::{Address, U256};
 use std::path::PathBuf;
+use std::str::FromStr;
 use std::sync::Arc;
 use std::time::Duration;
 
-#[derive(Debug, Clone, Copy, PartialEq, PartialOrd, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, PartialOrd, Eq, Default)]
 pub enum FinalityRequirement {
-    FileFinalized = 0,     // wait for file finalized
+    FileFinalized = 0, // wait for file finalized
+    #[default]
     TransactionPacked = 1, // wait for transaction packed
-    WaitNothing = 2,       // wait nothing
+    WaitNothing = 2,   // wait nothing
 }
 
 #[derive(Clone, Default, Debug)]
@@ -35,12 +37,6 @@ pub struct BatchUploadOption {
     pub nonce: U256,
     pub data_options: Vec<UploadOption>,
     pub task_size: u64,
-}
-
-impl Default for FinalityRequirement {
-    fn default() -> Self {
-        FinalityRequirement::TransactionPacked
-    }
 }
 
 #[derive(Args)]
@@ -102,9 +98,20 @@ pub struct UploadArgs {
 
     #[arg(long, default_value = "0", value_parser = duration_from_str, help = "cli task timeout, 0 for no timeout")]
     pub timeout: Duration,
+
+    #[arg(long, help = "Flow contract address (skips RPC call if provided)")]
+    pub flow_address: Option<String>,
+
+    #[arg(long, help = "Market contract address (requires flow-address)")]
+    pub market_address: Option<String>,
 }
 
 pub async fn run_upload(args: &UploadArgs) -> Result<()> {
+    // Validate contract address arguments (Go logic)
+    if args.market_address.is_some() && args.flow_address.is_none() {
+        anyhow::bail!("--market-address requires --flow-address to be provided");
+    }
+
     let file = Arc::new(File::open(&args.file)?);
 
     let fee = U256::from(args.fee * 1e18 as u64);
@@ -128,12 +135,31 @@ pub async fn run_upload(args: &UploadArgs) -> Result<()> {
 
     let web3_client = must_new_web3(&args.url, &args.key).await;
 
+    // Parse contract addresses (Go logic)
+    let flow_address = args
+        .flow_address
+        .as_ref()
+        .map(|s| Address::from_str(s))
+        .transpose()
+        .with_context(|| "Invalid flow address format")?;
+
+    let market_address = args
+        .market_address
+        .as_ref()
+        .map(|s| Address::from_str(s))
+        .transpose()
+        .with_context(|| "Invalid market address format")?;
+
     if let Some(indexer_url) = &args.indexer {
         let indexer_client = IndexerClient::new(indexer_url).await?;
-        indexer_client.upload(web3_client, file, &opt).await?;
+        indexer_client
+            .upload(web3_client, file, &opt, flow_address, market_address)
+            .await?;
     } else {
         let clients = must_new_zgs_clients(&args.node).await;
-        let uploader = Uploader::new(web3_client, clients).await?;
+        let uploader =
+            Uploader::new_with_addresses(web3_client, clients, flow_address, market_address)
+                .await?;
         uploader.upload(file, &opt).await?;
     }
     Ok(())

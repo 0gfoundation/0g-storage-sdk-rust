@@ -2,7 +2,7 @@ use anyhow::Error;
 use ethers::{
     prelude::*,
     providers::{Http, Provider},
-    signers::LocalWallet
+    signers::LocalWallet,
 };
 use std::ops::Deref;
 use std::sync::Arc;
@@ -43,7 +43,12 @@ impl FlowContract {
         Ok(market)
     }
 
-    pub async fn submit(&self, submission: Submission, fee: U256, traction_opts: TransactionRequest) -> Result<TxHash, Error> {
+    pub async fn submit(
+        &self,
+        submission: Submission,
+        fee: U256,
+        traction_opts: TransactionRequest,
+    ) -> Result<TxHash, Error> {
         let mut tx_builder = self.flow.submit(submission).legacy();
         if let Some(from) = traction_opts.from {
             tx_builder = tx_builder.from(from);
@@ -63,7 +68,7 @@ impl FlowContract {
         &self,
         submissions: Vec<Submission>,
         total_fee: U256,
-        traction_opts: TransactionRequest
+        traction_opts: TransactionRequest,
     ) -> Result<TxHash, Error> {
         let mut tx_builder = self.flow.batch_submit(submissions).legacy();
         if let Some(from) = traction_opts.from {

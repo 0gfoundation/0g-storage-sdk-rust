@@ -26,16 +26,15 @@ impl ShardConfig {
     }
 
     pub fn is_valid(&self) -> bool {
-        self.num_shard > 0
-            && self.num_shard.is_power_of_two()
-            && self.shard_id < self.num_shard
+        self.num_shard > 0 && self.num_shard.is_power_of_two() && self.shard_id < self.num_shard
     }
 
     pub fn next_segment_index(&self, start_segment_index: u64) -> u64 {
         if self.num_shard < 2 {
             return start_segment_index;
         }
-        (start_segment_index + self.num_shard - 1 - self.shard_id) / self.num_shard * self.num_shard + self.shard_id
+        (start_segment_index + self.num_shard - 1 - self.shard_id) / self.num_shard * self.num_shard
+            + self.shard_id
     }
 }
 
@@ -51,8 +50,8 @@ pub struct ShardedNode {
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq, Default)]
 #[serde(rename_all = "camelCase")]
 pub struct ShardedNodes {
-    pub trusted: Option<Vec<ShardedNode>>,   
-    pub discovered: Option<Vec<ShardedNode>>, 
+    pub trusted: Option<Vec<ShardedNode>>,
+    pub discovered: Option<Vec<ShardedNode>>,
 }
 
 struct ShardSegmentTreeNode {
@@ -108,7 +107,11 @@ impl ShardSegmentTreeNode {
     }
 }
 
-pub fn select(nodes: &mut [ShardedNode], expected_replica: u32, random: bool) -> (Vec<ShardedNode>, bool) {
+pub fn select(
+    nodes: &mut [ShardedNode],
+    expected_replica: u32,
+    random: bool,
+) -> (Vec<ShardedNode>, bool) {
     if expected_replica == 0 {
         return (Vec::new(), true);
     }

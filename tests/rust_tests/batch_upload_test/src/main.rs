@@ -71,7 +71,7 @@ async fn run_test() -> Result<()> {
     };
 
     let (_, roots) = indexer_client
-        .batch_upload(w3client, datas, true, &batch_opt)
+        .batch_upload(w3client, datas, true, &batch_opt, None, None)
         .await
         .context("Failed to upload files")?;
 

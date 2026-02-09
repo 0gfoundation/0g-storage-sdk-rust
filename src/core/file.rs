@@ -1,12 +1,12 @@
+use anyhow::{anyhow, Context, Result};
+use ethers::types::H256;
 use std::fs::File as StdFile;
 use std::io::{Read, Seek, SeekFrom};
 use std::path::Path;
 use std::sync::Arc;
-use ethers::types::H256;
-use anyhow::{Result, anyhow, Context};
 
-use super::dataflow::{IterableData, DEFAULT_CHUNK_SIZE, DEFAULT_SEGMENT_SIZE, merkle_tree};
-use super::iterator::{Iterator as CustomIterator, iterator_padded_size};
+use super::dataflow::{merkle_tree, IterableData, DEFAULT_CHUNK_SIZE, DEFAULT_SEGMENT_SIZE};
+use super::iterator::{iterator_padded_size, Iterator as CustomIterator};
 
 pub struct File {
     pub info: std::fs::Metadata,
@@ -42,7 +42,9 @@ impl File {
 
     pub async fn merkle_root<P: AsRef<Path>>(path: P) -> Result<H256> {
         let file = Self::open(path).context("Failed to open file for Merkle root calculation")?;
-        let tree = merkle_tree(Arc::new(file)).await.context("Failed to generate Merkle tree")?;
+        let tree = merkle_tree(Arc::new(file))
+            .await
+            .context("Failed to generate Merkle tree")?;
         Ok(tree.root())
     }
 }
@@ -65,7 +67,10 @@ impl IterableData for File {
     }
 
     fn iterate(&self, offset: i64, batch: i64, flow_padding: bool) -> Box<dyn CustomIterator + '_> {
-        assert!(batch % DEFAULT_CHUNK_SIZE as i64 == 0, "Batch size must align with chunk size");
+        assert!(
+            batch % DEFAULT_CHUNK_SIZE as i64 == 0,
+            "Batch size must align with chunk size"
+        );
         Box::new(FileIterator::new(
             &self.underlying,
             offset,
@@ -76,11 +81,19 @@ impl IterableData for File {
     }
 
     fn read(&self, buf: &mut [u8], offset: i64) -> Result<usize> {
-        let mut file = self.underlying.try_clone().context("Failed to clone file handle")?;
-        file.seek(SeekFrom::Start(offset as u64)).context("Failed to seek in file")?;
+        let mut file = self
+            .underlying
+            .try_clone()
+            .context("Failed to clone file handle")?;
+        file.seek(SeekFrom::Start(offset as u64))
+            .context("Failed to seek in file")?;
         let n = file.read(buf).context("Failed to read from file")?;
         if n == 0 && offset < self.size() {
-            return Err(anyhow!("Unexpected EOF, offset: {}, data_size: {}", offset, self.size()));
+            return Err(anyhow!(
+                "Unexpected EOF, offset: {}, data_size: {}",
+                offset,
+                self.size()
+            ));
         }
         Ok(n)
     }
@@ -134,9 +147,15 @@ impl<'a> CustomIterator for FileIterator<'a> {
             return Ok(true);
         }
 
-        let mut file = self.file.try_clone().context("Failed to clone file handle")?;
-        file.seek(SeekFrom::Start(self.offset as u64)).context("Failed to seek in file")?;
-        let n = file.read(&mut self.buf[..expected_buf_size]).context("Failed to read from file")?;
+        let mut file = self
+            .file
+            .try_clone()
+            .context("Failed to clone file handle")?;
+        file.seek(SeekFrom::Start(self.offset as u64))
+            .context("Failed to seek in file")?;
+        let n = file
+            .read(&mut self.buf[..expected_buf_size])
+            .context("Failed to read from file")?;
         self.buf_size = n;
         self.offset += n as i64;
 
@@ -164,7 +183,7 @@ mod tests {
         file.seek(SeekFrom::Start(0)).unwrap();
         file
     }
-    
+
     #[test]
     fn test_file_open_success() {
         let content = b"Hello, world!";
@@ -184,7 +203,10 @@ mod tests {
     fn test_file_open_dir_error() {
         let temp_dir = TempDir::new().unwrap();
         let result = File::open(temp_dir.path());
-        assert!(result.is_err(), "Opening a directory should return an error");
+        assert!(
+            result.is_err(),
+            "Opening a directory should return an error"
+        );
     }
 
     #[tokio::test]
@@ -211,6 +233,10 @@ mod tests {
             collected_data.extend_from_slice(iterator.current());
         }
 
-        assert_eq!(&collected_data[..content.len()], content, "Iterated data should match file content");
+        assert_eq!(
+            &collected_data[..content.len()],
+            content,
+            "Iterated data should match file content"
+        );
     }
 }

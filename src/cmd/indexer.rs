@@ -4,13 +4,13 @@ use jsonrpsee::http_server::HttpServerBuilder;
 use std::path::PathBuf;
 use std::time::Duration;
 
+use crate::common::utils::duration_from_str;
 use crate::indexer::api::{IndexerServer, IndexerServerImpl};
 use crate::indexer::{
     file_location_cache::{DefaultFileLocationCache, FileLocationCacheConfig},
     ip_location::{DefaultIPLocationManager, IPLocationConfig},
     node_manager::{DefaultNodeManger, NodeManagerConfig},
 };
-use crate::common::utils::duration_from_str;
 
 #[derive(Args)]
 pub struct IndexerArgs {
@@ -92,7 +92,6 @@ pub struct IndexerArgs {
 }
 
 pub async fn run_indexer(args: &IndexerArgs) -> Result<()> {
-
     let node_config = NodeManagerConfig {
         trusted_nodes: args.trusted.clone(),
         discovery_node: args.node.clone().unwrap_or_default(),
@@ -102,7 +101,11 @@ pub async fn run_indexer(args: &IndexerArgs) -> Result<()> {
     };
 
     let location_config = IPLocationConfig {
-        cache_file: args.ip_location_cache_file.to_str().unwrap_or_default().to_string(),
+        cache_file: args
+            .ip_location_cache_file
+            .to_str()
+            .unwrap_or_default()
+            .to_string(),
         cache_write_interval: args.ip_location_cache_interval,
         access_token: args.ip_location_token.clone().unwrap_or_default(),
     };
@@ -114,9 +117,15 @@ pub async fn run_indexer(args: &IndexerArgs) -> Result<()> {
         cache_size: args.file_location_cache_size,
     };
 
-    DefaultIPLocationManager::init(location_config).await.context("Failed to initialize IP Location Manager")?;
-    DefaultNodeManger::init(node_config).await.context("Failed to initialize Node Manager")?;
-    DefaultFileLocationCache::init(location_cache_config).await.context("Failed to initialize File Location Cache")?;
+    DefaultIPLocationManager::init(location_config)
+        .await
+        .context("Failed to initialize IP Location Manager")?;
+    DefaultNodeManger::init(node_config)
+        .await
+        .context("Failed to initialize Node Manager")?;
+    DefaultFileLocationCache::init(location_cache_config)
+        .await
+        .context("Failed to initialize File Location Cache")?;
 
     log::info!(
         "Starting indexer service ... trusted: {}, discover: {}",
@@ -125,7 +134,10 @@ pub async fn run_indexer(args: &IndexerArgs) -> Result<()> {
     );
 
     // Start server
-    log::info!("Starting server at {}", format!("127.0.0.1:{}", args.endpoint));
+    log::info!(
+        "Starting server at {}",
+        format!("127.0.0.1:{}", args.endpoint)
+    );
     let server = HttpServerBuilder::default()
         .build(format!("127.0.0.1:{}", args.endpoint))
         .await

@@ -6,11 +6,11 @@ use std::time::Duration;
 use crate::cmd::upload::{FinalityRequirement, UploadOption};
 use crate::common::blockchain::rpc::must_new_web3;
 use crate::common::utils::duration_from_str;
+use crate::common::utils::pad_to_32_bytes;
 use crate::indexer::client::IndexerClient;
 use crate::kv::batcher::Batcher;
 use crate::node::client_zgs::must_new_zgs_clients;
 use crate::node::client_zgs::ZgsClient;
-use crate::common::utils::pad_to_32_bytes;
 
 #[derive(Args)]
 pub struct KvWriteArgs {
@@ -97,8 +97,8 @@ pub async fn run_kv_write(args: &KvWriteArgs) -> Result<()> {
         task_size: args.task_size,
         expected_replica: args.expected_replica,
         skip_tx: args.skip_tx,
-        fee: fee,
-        nonce: nonce,
+        fee,
+        nonce,
     };
 
     let web3_client = must_new_web3(&args.url, &args.key).await;
@@ -107,7 +107,7 @@ pub async fn run_kv_write(args: &KvWriteArgs) -> Result<()> {
     if let Some(indexer_url) = &args.indexer {
         let indexer_client = IndexerClient::new(indexer_url).await?;
         clients = indexer_client
-            .select_nodes(args.expected_replica as usize, &vec![])
+            .select_nodes(args.expected_replica as usize, &[])
             .await?;
     }
 
@@ -130,7 +130,7 @@ pub async fn run_kv_write(args: &KvWriteArgs) -> Result<()> {
 
     log::debug!("stream_id in args: {:?}", args.stream_id);
     let stream_id =
-        H256::from_slice(pad_to_32_bytes(&args.stream_id.trim_start_matches("0x"))?.as_slice());
+        H256::from_slice(pad_to_32_bytes(args.stream_id.trim_start_matches("0x"))?.as_slice());
     log::info!("stream_id: {:?}", stream_id);
 
     for (key, value) in args.stream_keys.iter().zip(args.stream_values.iter()) {

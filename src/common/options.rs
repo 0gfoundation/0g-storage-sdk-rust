@@ -1,8 +1,8 @@
-use std::time::Duration;
 use anyhow::Result;
-use log::LevelFilter;
-use tokio::sync::Mutex;
 use lazy_static::lazy_static;
+use log::LevelFilter;
+use std::time::Duration;
+use tokio::sync::Mutex;
 
 #[derive(Debug, Clone, Default)]
 pub struct RpcOption {

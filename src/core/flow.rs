@@ -2,9 +2,9 @@ use super::dataflow::{
     async_read_at, segment_root, IterableData, DEFAULT_CHUNK_SIZE, DEFAULT_SEGMENT_MAX_CHUNKS,
 };
 use super::merkle::tree_builder::TreeBuilder;
-use crate::contract::flow::{Submission, SubmissionNode};
+use crate::contracts::flow::{Submission, SubmissionData, SubmissionNode};
 use anyhow::{anyhow, Result};
-use ethers::types::{Bytes, U256};
+use ethers::types::{Address, Bytes, U256};
 use futures::future::try_join_all;
 use log::{debug, trace};
 use std::sync::Arc;
@@ -19,11 +19,14 @@ impl Flow {
         Flow { data, tags }
     }
 
-    pub async fn create_submission(&self) -> Result<Submission> {
+    pub async fn create_submission(&self, submitter: Address) -> Result<Submission> {
         let submission = Submission {
-            length: U256::from(self.data.size()),
-            tags: Bytes::from(self.tags.clone()),
-            nodes: Vec::new(),
+            data: SubmissionData {
+                length: U256::from(self.data.size()),
+                tags: Bytes::from(self.tags.clone()),
+                nodes: Vec::new(),
+            },
+            submitter,
         };
         debug!("Creating submission: {:?}", submission);
 
@@ -36,13 +39,16 @@ impl Flow {
                     log::debug!("{}th node contain {} chunks", i, chunks);
                     let node = self.create_node(offset, chunks);
                     offset += DEFAULT_CHUNK_SIZE as i64 * chunks;
-                    return node;
+                    node
                 }),
         )
         .await?;
 
         Ok(Submission {
-            nodes,
+            data: SubmissionData {
+                nodes,
+                ..submission.data
+            },
             ..submission
         })
     }
@@ -173,7 +179,9 @@ mod tests {
         let tag = "test_file".as_bytes().to_vec();
         let flow = Flow::new(Arc::new(data), tag);
 
-        let submission = flow.create_submission().await.unwrap();
+        // Use a dummy address for testing
+        let submitter = Address::zero();
+        let submission = flow.create_submission(submitter).await.unwrap();
         log::info!("Submission: {:?}", submission);
     }
 }

@@ -1,9 +1,9 @@
 pub mod schedule;
 
-use std::time::Duration;
-use std::str::FromStr;
-use hex;
 use anyhow::Result;
+use hex;
+use std::str::FromStr;
+use std::time::Duration;
 
 pub fn duration_from_str(s: &str) -> Result<Duration, std::num::ParseIntError> {
     let secs = u64::from_str(s)?;
@@ -11,7 +11,7 @@ pub fn duration_from_str(s: &str) -> Result<Duration, std::num::ParseIntError> {
 }
 
 pub fn max_u64() -> u64 {
-    return u64::MAX;
+    u64::MAX
 }
 
 pub fn pad_to_32_bytes(hex_str: &str) -> Result<Vec<u8>> {

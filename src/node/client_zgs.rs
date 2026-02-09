@@ -4,16 +4,16 @@ use serde_json::json;
 use std::ops::Deref;
 
 use super::types::{FileInfo, Segment, SegmentWithProof, Status};
+use crate::common::options::GLOBAL_OPTION;
 use crate::common::rpc::{
     client::{validate_url, RpcClient},
     error::{RpcError, ZgRpcResult},
 };
 use crate::common::shard::ShardConfig;
-use crate::common::options::GLOBAL_OPTION;
 
 #[derive(Debug, Clone)]
 pub struct ZgsClient {
-    pub client: RpcClient
+    pub client: RpcClient,
 }
 
 impl Deref for ZgsClient {
@@ -45,7 +45,7 @@ impl ZgsClient {
 
     pub async fn get_file_info(&self, root: H256) -> ZgRpcResult<Option<FileInfo>> {
         self.client
-            .request("zgs_getFileInfo", vec![json!(root)])
+            .request("zgs_getFileInfo", vec![json!(root), json!(true)])
             .await
             .map_err(|e| RpcError {
                 message: e.to_string(),
@@ -152,10 +152,7 @@ impl ZgsClient {
 
     pub async fn get_file_info_by_tx_seq(&self, tx_seq: u64) -> ZgRpcResult<Option<FileInfo>> {
         self.client
-            .request(
-                "zgs_getFileInfoByTxSeq",
-                vec![json!(tx_seq)],
-            )
+            .request("zgs_getFileInfoByTxSeq", vec![json!(tx_seq)])
             .await
             .map_err(|e| RpcError {
                 message: e.to_string(),
@@ -165,14 +162,15 @@ impl ZgsClient {
     }
 }
 
-pub async fn must_new_zgs_client(url: &String) -> ZgsClient {
-    ZgsClient::new(&url).await.expect("Failed to create ZGS client")
+pub async fn must_new_zgs_client(url: &str) -> ZgsClient {
+    ZgsClient::new(url)
+        .await
+        .expect("Failed to create ZGS client")
 }
 
 pub async fn must_new_zgs_clients(urls: &[String]) -> Vec<ZgsClient> {
-    futures::future::join_all(
-        urls.iter().map(|url| ZgsClient::new(url))
-    ).await
+    futures::future::join_all(urls.iter().map(|url| ZgsClient::new(url)))
+        .await
         .into_iter()
         .map(|result| result.expect("Failed to create ZGS client"))
         .collect()

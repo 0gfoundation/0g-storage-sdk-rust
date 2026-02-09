@@ -1,9 +1,9 @@
 #![allow(dead_code)]
 
-use std::fmt;
-use std::fmt::Debug;
 use jsonrpsee::core::Error;
 use jsonrpsee::types::error::{CallError, ErrorCode, ErrorObject};
+use std::fmt;
+use std::fmt::Debug;
 
 pub type ZgRpcResult<T> = std::result::Result<T, RpcError>;
 
@@ -62,12 +62,11 @@ pub fn invalid_params(param: &str, msg: impl std::convert::AsRef<str>) -> Error 
     )))
 }
 
-
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::common::rpc::client::RpcClient;
     use crate::common::options::RpcOption;
+    use crate::common::rpc::client::RpcClient;
     use anyhow::{Context, Result};
 
     async fn inner(client: &RpcClient, result_type: usize) -> Result<String> {
@@ -79,11 +78,13 @@ mod tests {
                     method: "GET".to_string(),
                     url: client.url.clone(),
                 };
-                Err(rpc_error).with_context(|| format!("Failed to get status from storage node {}", client.url))
-            },
+                Err(rpc_error).with_context(|| {
+                    format!("Failed to get status from storage node {}", client.url)
+                })
+            }
             _ => Err(anyhow::anyhow!("Some other error occurred")),
         }
-    } 
+    }
 
     async fn outer(client: &RpcClient, result_type: usize) -> String {
         match inner(client, result_type).await {
@@ -92,7 +93,7 @@ mod tests {
                 "Ok!".to_string()
             }
             Err(err) => {
-                if let Some(_) = err.downcast_ref::<RpcError>() {
+                if err.downcast_ref::<RpcError>().is_some() {
                     log::error!("Rpc error!");
                     "Rpc error!".to_string()
                 } else {

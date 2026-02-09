@@ -1,18 +1,18 @@
 use anyhow::Result;
 use serde_json::json;
-use std::ops::Deref;
 use std::collections::HashMap;
+use std::ops::Deref;
 
-use super::types::{PeerInfo, LocationInfo};
+use super::types::{LocationInfo, PeerInfo};
+use crate::common::options::GLOBAL_OPTION;
 use crate::common::rpc::{
     client::{validate_url, RpcClient},
     error::{RpcError, ZgRpcResult},
 };
-use crate::common::options::GLOBAL_OPTION;
 
 #[derive(Debug, Clone)]
 pub struct AdminClient {
-    pub client: RpcClient
+    pub client: RpcClient,
 }
 
 impl Deref for AdminClient {
@@ -42,9 +42,16 @@ impl AdminClient {
             })
     }
 
-    pub async fn get_file_location(&self, tx_seq: u64, all_shards: bool) -> ZgRpcResult<Vec<LocationInfo>> {
+    pub async fn get_file_location(
+        &self,
+        tx_seq: u64,
+        all_shards: bool,
+    ) -> ZgRpcResult<Vec<LocationInfo>> {
         self.client
-            .request("admin_getFileLocation", vec![json!(tx_seq), json!(all_shards)])
+            .request(
+                "admin_getFileLocation",
+                vec![json!(tx_seq), json!(all_shards)],
+            )
             .await
             .map_err(|e| RpcError {
                 message: e.to_string(),
@@ -63,5 +70,4 @@ impl AdminClient {
                 url: self.url.clone(),
             })
     }
-    
 }

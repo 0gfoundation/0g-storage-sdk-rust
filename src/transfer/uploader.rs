@@ -1,16 +1,19 @@
 use crate::cmd::upload::{BatchUploadOption, FinalityRequirement, UploadOption};
 use crate::common::blockchain::contract::RetryOption;
 use crate::common::shard::{check_replica, ShardConfig};
-use crate::contract::contract::FlowContract;
-use crate::contract::flow::Submission;
-use crate::contract::market::Market;
+use crate::contracts::contract::FlowContract;
+use crate::contracts::flow::Submission;
+use crate::contracts::market::Market;
 use crate::core::dataflow::{
     async_read_at, merkle_tree, segment_range, segment_root, IterableData, DEFAULT_CHUNK_SIZE,
     DEFAULT_SEGMENT_MAX_CHUNKS, DEFAULT_SEGMENT_SIZE,
 };
 use crate::core::flow::Flow;
 use crate::core::merkle::tree::Tree;
-use crate::node::{client_zgs::ZgsClient, types::SegmentWithProof};
+use crate::node::{
+    client_zgs::ZgsClient,
+    types::{FileInfo, SegmentWithProof},
+};
 use anyhow::{Context, Result};
 use ethers::providers::Middleware;
 use ethers::types::{TransactionReceipt, H256, U256};
@@ -22,10 +25,8 @@ use ethers::{
 use futures::future::{join_all, try_join_all};
 use std::sync::Arc;
 use std::time::Instant;
-use tokio::task::JoinSet;
 use tokio::time::Duration;
 
-const SMALL_FILE_SIZE_THRESHOLD: i64 = 256 * 1024;
 const DEFAULT_TASK_SIZE: u32 = 10;
 
 pub struct Uploader {
@@ -56,29 +57,56 @@ impl Uploader {
         web3_client: Arc<SignerMiddleware<Provider<Http>, LocalWallet>>,
         clients: Vec<ZgsClient>,
     ) -> Result<Self> {
+        Self::new_with_addresses(web3_client, clients, None, None).await
+    }
+
+    pub async fn new_with_addresses(
+        web3_client: Arc<SignerMiddleware<Provider<Http>, LocalWallet>>,
+        clients: Vec<ZgsClient>,
+        flow_address: Option<Address>,
+        market_address: Option<Address>,
+    ) -> Result<Self> {
         if clients.is_empty() {
             anyhow::bail!("Storage node not specified");
         }
 
-        let status = clients[0].get_status().await.with_context(|| {
-            format!("Failed to get status from storage node {}", clients[0].url)
-        })?;
+        // Determine flow address (Go logic)
+        let flow_addr = if let Some(addr) = flow_address {
+            // Use provided flow address (saves 1 RPC call to storage node)
+            addr
+        } else {
+            // Fetch from storage node (current behavior)
+            let status = clients[0].get_status().await.with_context(|| {
+                format!("Failed to get status from storage node {}", clients[0].url)
+            })?;
 
-        let chain_id = web3_client
-            .get_chainid()
-            .await
-            .with_context(|| "Failed to get chain ID from blockchain node")?;
+            let chain_id = web3_client
+                .get_chainid()
+                .await
+                .with_context(|| "Failed to get chain ID from blockchain node")?;
 
-        if chain_id != U256::from(status.network_identity.chain_id) {
-            anyhow::bail!(
-                "Chain ID mismatch, blockchain = {}, storage node = {}",
-                chain_id,
-                status.network_identity.chain_id
-            )
-        }
+            if chain_id != U256::from(status.network_identity.chain_id) {
+                anyhow::bail!(
+                    "Chain ID mismatch, blockchain = {}, storage node = {}",
+                    chain_id,
+                    status.network_identity.chain_id
+                )
+            }
 
-        let flow = FlowContract::new(web3_client.clone(), status.network_identity.flow_address);
-        let market = flow.get_market_contract().await?;
+            status.network_identity.flow_address
+        };
+
+        let flow = FlowContract::new(web3_client.clone(), flow_addr);
+
+        // Determine market address (Go logic)
+        let market = if let Some(market_addr) = market_address {
+            // Use provided market address (saves 1 RPC call to chain)
+            Market::new(market_addr, web3_client.clone())
+        } else {
+            // Get market from flow contract (current behavior)
+            flow.get_market_contract().await?
+        };
+
         Ok(Self {
             clients,
             flow,
@@ -86,17 +114,17 @@ impl Uploader {
         })
     }
 
-    pub async fn check_log_existence(&self, root: H256) -> Result<bool> {
+    pub async fn check_log_existence(&self, root: H256) -> Result<Option<FileInfo>> {
         for client in &self.clients {
             match client.get_file_info(root).await {
-                Ok(Some(_)) => {
-                    return Ok(true);
+                Ok(Some(info)) => {
+                    return Ok(Some(info));
                 }
                 Ok(None) => continue,
                 Err(err) => return Err(err.into()),
             }
         }
-        Ok(false)
+        Ok(None)
     }
 
     pub async fn batch_upload(
@@ -106,24 +134,24 @@ impl Uploader {
         opt: &BatchUploadOption,
     ) -> Result<(H256, Vec<H256>)> {
         let start_time = std::time::Instant::now();
-    
+
         let n = datas.len();
         if n == 0 {
             anyhow::bail!("empty datas");
         }
-    
+
         let task_size = std::cmp::max(opt.task_size, 1);
         if opt.data_options.len() != n {
             anyhow::bail!("datas and tags length mismatch");
         }
-    
+
         log::info!("Prepare to upload batchly, dataNum={}", n);
-    
+
         // calculate merkle tree and check existence
         let mut trees = vec![None; n];
         let mut data_roots = vec![H256::zero(); n];
         let mut file_infos = vec![None; n];
-        
+
         // control concurrency
         let tasks = futures::stream::iter(0..n).map(|i| {
             let data = datas[i].clone();
@@ -134,35 +162,38 @@ impl Uploader {
                     data.num_chunks(),
                     data.num_segments(),
                 );
-    
+
                 // calculate merkle tree
-                let tree = merkle_tree(data).await
+                let tree = merkle_tree(data)
+                    .await
                     .context("Failed to create data merkle tree")?;
-                
+
                 log::info!("Data merkle root calculated: {:?}", tree.root());
-                
+
                 // check existence
-                let info = self.check_log_existence(tree.root()).await
+                let info = self
+                    .check_log_existence(tree.root())
+                    .await
                     .context("Failed to check if log entry available")?;
-    
+
                 Ok::<_, anyhow::Error>((i, tree, info))
             }
         });
-    
+
         // control concurrency
         let mut buffered = tasks.buffer_unordered(task_size as usize);
         while let Some(result) = buffered.next().await {
             let (i, tree, info) = result?;
             data_roots[i] = tree.root();
             trees[i] = Some(Arc::new(tree));
-            file_infos[i] = Some(info);
+            file_infos[i] = info;
         }
-    
+
         // collect data to submit
         let mut to_submit_datas = Vec::new();
         let mut to_submit_tags = Vec::new();
         let mut last_tree_to_submit = None;
-    
+
         for i in 0..n {
             let opt = &opt.data_options[i];
             if !opt.skip_tx || file_infos[i].is_none() {
@@ -171,33 +202,36 @@ impl Uploader {
                 last_tree_to_submit = trees[i].clone();
             }
         }
-    
+
         // submit log to blockchain
         let (tx_hash, receipt) = if !to_submit_datas.is_empty() {
-            let (hash, rcpt) = self.submit_log_entry(
-                to_submit_datas,
-                to_submit_tags,
-                wait_for_log_entry,
-                opt.nonce,
-                opt.fee,
-            ).await
-            .context("Failed to submit log entry")?;
-    
+            let (hash, rcpt) = self
+                .submit_log_entry(
+                    to_submit_datas,
+                    to_submit_tags,
+                    wait_for_log_entry,
+                    opt.nonce,
+                    opt.fee,
+                )
+                .await
+                .context("Failed to submit log entry")?;
+
             // wait for storage node to get log entry
             if let Some(last_tree) = last_tree_to_submit {
                 self.wait_for_log_entry(
                     last_tree.root(),
                     FinalityRequirement::TransactionPacked,
                     rcpt.clone(),
-                ).await
+                )
+                .await
                 .context("Failed to check if log entry available on storage node")?;
             }
-    
+
             (hash, rcpt)
         } else {
             (H256::zero(), None)
         };
-    
+
         // second phase: upload file
         let tasks = futures::stream::iter(0..n).map(|i| {
             let data = datas[i].clone();
@@ -205,7 +239,7 @@ impl Uploader {
             let info = file_infos[i].clone();
             let opt = &opt.data_options[i];
             let receipt = receipt.clone();
-            
+
             async move {
                 // if no file info, wait for log entry
                 if info.is_none() {
@@ -213,38 +247,37 @@ impl Uploader {
                         tree.root(),
                         FinalityRequirement::TransactionPacked,
                         receipt.clone(),
-                    ).await?;
+                    )
+                    .await?;
                 }
-    
+
                 // upload file to storage node
                 self.upload_file(
                     data,
                     tree.clone(),
                     opt.expected_replica as u32,
                     opt.task_size as u32,
-                ).await
+                )
+                .await
                 .context("Failed to upload file")?;
-    
+
                 // wait for transaction finality
-                self.wait_for_log_entry(
-                    tree.root(),
-                    opt.finality_required,
-                    None,
-                ).await
-                .context("Failed to wait for transaction finality")?;
-    
+                self.wait_for_log_entry(tree.root(), opt.finality_required, None)
+                    .await
+                    .context("Failed to wait for transaction finality")?;
+
                 Ok::<_, anyhow::Error>(())
             }
         });
-    
+
         // control concurrency
         let mut buffered = tasks.buffer_unordered(task_size as usize);
         while let Some(result) = buffered.next().await {
             result?;
         }
-    
+
         log::info!("batch upload took: {:?}", start_time.elapsed());
-    
+
         Ok((tx_hash, data_roots))
     }
 
@@ -253,8 +286,8 @@ impl Uploader {
 
         let tree = Arc::new(merkle_tree(data.clone()).await?);
         let root = tree.root();
-        let exist = self.check_log_existence(root).await?;
-        let tx_hash = if !opt.skip_tx | !exist {
+        let file_info = self.check_log_existence(root).await?;
+        let tx_hash = if !opt.skip_tx || file_info.is_none() {
             log::info!(
                 "Data[{:?}] to be uploaded not exist and not skip, uploading...",
                 root
@@ -269,13 +302,12 @@ impl Uploader {
                 )
                 .await?;
             log::info!("Tx[{:?}] receipt: {:?}", tx_hash, receipt);
-            if data.size() <= SMALL_FILE_SIZE_THRESHOLD {
-                log::info!("Upload small data immediately");
-            } else if opt.finality_required <= FinalityRequirement::TransactionPacked {
-                let _ = self
-                    .wait_for_log_entry(root, FinalityRequirement::TransactionPacked, receipt)
-                    .await;
-            }
+
+            // Always wait for log entry to be available on storage nodes (uploadSlow path)
+            // This is required before uploading segments to ensure the tx is synced
+            let _ = self
+                .wait_for_log_entry(root, FinalityRequirement::TransactionPacked, receipt)
+                .await;
 
             tx_hash
         } else {
@@ -306,13 +338,14 @@ impl Uploader {
         nonce: U256,
         fee: U256,
     ) -> Result<(H256, Option<TransactionReceipt>)> {
+        let submitter = self.flow.account;
         let submission_futures: Vec<_> = datas
             .into_iter()
             .zip(tags.into_iter())
             .map(|(data, tag)| {
                 let flow = Flow::new(data, tag);
                 async move {
-                    flow.create_submission()
+                    flow.create_submission(submitter)
                         .await
                         .context("Failed to create submission")
                 }
@@ -396,11 +429,16 @@ impl Uploader {
                             && !info.finalized
                         {
                             log::info!(
-                                "Log entry is available, but not finalized yet: cached={}, uploaded_segments={}",
-                                info.is_cached, info.uploaded_seg_num
+                                "Log entry is available, but not finalized yet: tx_seq={}, cached={}, uploaded_segments={}",
+                                info.tx.seq, info.is_cached, info.uploaded_seg_num
                             );
                             ok = false;
                             break;
+                        } else {
+                            log::info!(
+                                "Log entry available: tx_seq={}, finalized={}, uploaded_segments={}",
+                                info.tx.seq, info.finalized, info.uploaded_seg_num
+                            );
                         }
                     }
                     Ok(None) => {
@@ -481,7 +519,7 @@ impl Uploader {
                             seg_index += shard_config.num_shard * task_size as u64;
                         }
 
-                        return Ok::<Vec<UploadTask>, anyhow::Error>(tasks);
+                        Ok::<Vec<UploadTask>, anyhow::Error>(tasks)
                     } else {
                         anyhow::bail!("")
                     }
@@ -525,7 +563,7 @@ impl Uploader {
         );
 
         let segment_uploader = self
-            .new_segment_uploader(data, tree, expected_replica as u32, task_size)
+            .new_segment_uploader(data, tree, expected_replica, task_size)
             .await?;
 
         let tasks = (0..segment_uploader.tasks.len()).map(|task_index| {
@@ -571,10 +609,6 @@ pub async fn get_shard_configs(clients: &[ZgsClient]) -> Result<Vec<ShardConfig>
     results.into_iter().collect()
 }
 
-async fn check_log_existence(clients: &[ZgsClient], root: H256) -> Result<bool> {
-    todo!()
-}
-
 impl SegmentUploader {
     async fn do_task(&self, task_index: usize) -> Result<()> {
         let upload_task = &self.tasks[task_index];
@@ -593,7 +627,7 @@ impl SegmentUploader {
 
             let segment = async_read_at(
                 self.data.clone(),
-                DEFAULT_SEGMENT_SIZE as usize,
+                DEFAULT_SEGMENT_SIZE,
                 (seg_index as usize * DEFAULT_SEGMENT_SIZE) as i64,
                 self.data.padded_size(),
             )

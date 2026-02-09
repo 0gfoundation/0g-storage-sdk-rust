@@ -27,9 +27,13 @@ pub async fn deploy<M: Middleware + 'static>(
     }
 
     let pending_tx = client.send_transaction(tx, None).await?;
-    let receipt = pending_tx.await?.ok_or_else(|| anyhow!("Transaction failed"))?;
+    let receipt = pending_tx
+        .await?
+        .ok_or_else(|| anyhow!("Transaction failed"))?;
 
-    receipt.contract_address.ok_or_else(|| anyhow!("No contract address in receipt"))
+    receipt
+        .contract_address
+        .ok_or_else(|| anyhow!("No contract address in receipt"))
 }
 
 fn parse_bytecode(data_or_file: &str) -> Result<Bytes> {
@@ -112,7 +116,10 @@ impl Contract {
     }
 
     pub async fn get_nonce(&self) -> Result<U256> {
-        let nonce = self.client.get_transaction_count(self.account, None).await?;
+        let nonce = self
+            .client
+            .get_transaction_count(self.account, None)
+            .await?;
         log::info!("Current nonce: {:?}", nonce);
         Ok(nonce)
     }

@@ -97,7 +97,11 @@ impl Metadata {
 
         log::info!("offset_before_write: {}", self.offset);
         self.offset += data.len();
-        log::info!("offset_after_write: {}, data_len: {}", self.offset, data.len());
+        log::info!(
+            "offset_after_write: {}, data_len: {}",
+            self.offset,
+            data.len()
+        );
 
         let offset_bytes = (self.offset as u64).to_be_bytes();
         file.seek(SeekFrom::Start((self.size + METADATA_SIZE - 8) as u64))
@@ -141,12 +145,18 @@ mod tests {
 
         // Create temp file for testing
         let mut tmp_file = NamedTempFile::new().unwrap();
-        log::info!("File size: {}", tmp_file.as_file().metadata().unwrap().len());
+        log::info!(
+            "File size: {}",
+            tmp_file.as_file().metadata().unwrap().len()
+        );
 
         // Extend file with metadata
         let mut md = Metadata::new(test_hash, 12345);
         md.extend(tmp_file.as_file_mut()).unwrap();
-        log::info!("File size: {}", tmp_file.as_file().metadata().unwrap().len());
+        log::info!(
+            "File size: {}",
+            tmp_file.as_file().metadata().unwrap().len()
+        );
 
         // Check file size after metadata extended
         let file_size = tmp_file.as_file().metadata().unwrap().len();

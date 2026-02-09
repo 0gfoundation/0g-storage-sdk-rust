@@ -1,7 +1,6 @@
 use anyhow::Result;
 use clap::Parser;
 use std::collections::HashMap;
-use tokio;
 
 use zg_storage_client::cmd::{
     download, generate_file, indexer, kv_read, kv_write,

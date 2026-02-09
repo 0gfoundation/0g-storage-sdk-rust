@@ -26,7 +26,7 @@ pub struct GenerateArgs {
 
 pub async fn run_generate_file(args: &GenerateArgs) -> Result<()> {
     log::info!("Generating file: {:?}", args.file);
-    
+
     let file_name = args
         .file
         .file_name()

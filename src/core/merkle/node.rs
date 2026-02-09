@@ -1,6 +1,6 @@
 use ethers::types::H256;
-use tiny_keccak::{Hasher, Keccak};
 use std::sync::{Arc, Mutex};
+use tiny_keccak::{Hasher, Keccak};
 
 pub struct Node {
     pub parent: Option<Arc<Mutex<Node>>>,
@@ -24,7 +24,7 @@ impl Node {
         hasher.update(content);
         let mut hash = [0u8; 32];
         hasher.finalize(&mut hash);
-        
+
         Node::new(H256::from(hash))
     }
 
@@ -36,7 +36,7 @@ impl Node {
         hasher.finalize(&mut hash);
 
         let node = Node::new(H256::from(hash));
-        
+
         {
             let mut node_guard = node.lock().unwrap();
             node_guard.left = Some(left.clone());

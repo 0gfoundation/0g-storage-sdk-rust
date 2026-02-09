@@ -1,17 +1,17 @@
 use anyhow::Result;
 use ethers::types::H256;
 use log::error;
+use serde_json::json;
 use std::ops::Deref;
 use thiserror::Error;
-use serde_json::json;
 
+use super::types::Segment;
+use crate::common::options::GLOBAL_OPTION;
 use crate::common::rpc::{
     client::{validate_url, RpcClient},
     error::{RpcError, ZgRpcResult},
 };
 use crate::node::types::ValueSegment;
-use crate::common::options::GLOBAL_OPTION;
-use super::types::Segment;
 
 #[derive(Error, Debug)]
 pub enum KvClientError {
@@ -23,7 +23,7 @@ pub enum KvClientError {
 
 #[derive(Debug, Clone)]
 pub struct KvClient {
-    pub client: RpcClient
+    pub client: RpcClient,
 }
 
 impl Deref for KvClient {
@@ -55,7 +55,13 @@ impl KvClient {
         self.client
             .request(
                 "kv_getValue",
-                vec![json!(stream_id), json!(key), json!(start_index), json!(length), json!(version)],
+                vec![
+                    json!(stream_id),
+                    json!(key),
+                    json!(start_index),
+                    json!(length),
+                    json!(version),
+                ],
             )
             .await
             .map_err(|e| RpcError {
@@ -66,15 +72,9 @@ impl KvClient {
     }
 
     // GetTransactionResult Call kv_getTransactionResult RPC to query the kv replay status of a given file.
-    pub async fn get_transaction_result(
-        &self,
-        tx_seq: u64
-    ) -> ZgRpcResult<Option<String>> {
+    pub async fn get_transaction_result(&self, tx_seq: u64) -> ZgRpcResult<Option<String>> {
         self.client
-            .request(
-                "kv_getTransactionResult",
-                vec![json!(tx_seq)],
-            )
+            .request("kv_getTransactionResult", vec![json!(tx_seq)])
             .await
             .map_err(|e| RpcError {
                 message: e.to_string(),

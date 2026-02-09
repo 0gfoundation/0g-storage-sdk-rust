@@ -9,6 +9,12 @@ pub struct TreeBuilder {
     leaf_nodes: Vec<Arc<Mutex<Node>>>,
 }
 
+impl Default for TreeBuilder {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl TreeBuilder {
     pub fn new() -> Self {
         TreeBuilder {

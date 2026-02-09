@@ -1,3 +1,3 @@
-pub mod uploader;
-pub mod downloader;
 pub mod download;
+pub mod downloader;
+pub mod uploader;

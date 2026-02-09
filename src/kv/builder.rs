@@ -1,9 +1,12 @@
-use std::collections::HashMap;
-use ethers::types::{H256, Address};
-use hex::{encode as hex_encode, decode as hex_decode};
+use ethers::types::{Address, H256};
+use hex::{decode as hex_decode, encode as hex_encode};
 use std::cmp::Ordering;
+use std::collections::HashMap;
 
-use super::types::{AccessControl, AccessControlType, StreamData, StreamRead, StreamWrite, StreamError, STREAM_DOMAIN};
+use super::types::{
+    AccessControl, AccessControlType, StreamData, StreamError, StreamRead, StreamWrite,
+    STREAM_DOMAIN,
+};
 
 // Constants
 const MAX_SET_SIZE: usize = 1 << 16; // 64K
@@ -111,7 +114,7 @@ impl StreamDataBuilder {
 
     pub fn build_tags(&self, sorted: Option<bool>) -> Vec<u8> {
         let mut ids: Vec<H256> = self.stream_ids.keys().cloned().collect();
-        
+
         if sorted.unwrap_or(false) {
             ids.sort_by(|a, b| format!("{:?}", a).cmp(&format!("{:?}", b)));
         }
@@ -128,7 +131,7 @@ impl StreamDataBuilder {
         let key_hex = format!("0x{}", hex_encode(key));
         self.reads
             .entry(stream_id)
-            .or_insert_with(HashMap::new)
+            .or_default()
             .insert(key_hex, true);
         self
     }
@@ -139,7 +142,7 @@ impl StreamDataBuilder {
         println!("key hex: {:?}", key_hex);
         self.writes
             .entry(stream_id)
-            .or_insert_with(HashMap::new)
+            .or_default()
             .insert(key_hex, data);
         self
     }
@@ -170,7 +173,12 @@ impl StreamDataBuilder {
 
     // Access control methods
     pub fn grant_admin_role(&mut self, stream_id: H256, account: Address) -> &mut Self {
-        self.with_control(AccessControlType::GrantAdminRole, stream_id, Some(account), None)
+        self.with_control(
+            AccessControlType::GrantAdminRole,
+            stream_id,
+            Some(account),
+            None,
+        )
     }
 
     pub fn renounce_admin_role(&mut self, stream_id: H256) -> &mut Self {
@@ -178,7 +186,12 @@ impl StreamDataBuilder {
     }
 
     pub fn set_key_to_special(&mut self, stream_id: H256, key: Vec<u8>) -> &mut Self {
-        self.with_control(AccessControlType::SetKeyToSpecial, stream_id, None, Some(key))
+        self.with_control(
+            AccessControlType::SetKeyToSpecial,
+            stream_id,
+            None,
+            Some(key),
+        )
     }
 }
 

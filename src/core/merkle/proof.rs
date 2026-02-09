@@ -1,7 +1,7 @@
+use anyhow::{anyhow, Result};
 use ethers::types::H256;
+use serde::{Deserialize, Serialize};
 use tiny_keccak::{Hasher, Keccak};
-use serde::{Serialize, Deserialize};
-use anyhow::{Result, anyhow};
 
 #[derive(Serialize, Deserialize, Debug)]
 pub struct Proof {
@@ -27,7 +27,13 @@ impl Proof {
         Ok(())
     }
 
-    pub fn validate(&self, root: H256, content: &[u8], position: u64, num_leaf_nodes: u64) -> Result<()> {
+    pub fn validate(
+        &self,
+        root: H256,
+        content: &[u8],
+        position: u64,
+        num_leaf_nodes: u64,
+    ) -> Result<()> {
         let mut hasher = Keccak::v256();
         hasher.update(content);
         let mut content_hash = [0u8; 32];
@@ -37,7 +43,13 @@ impl Proof {
         self.validate_hash(root, content_hash, position, num_leaf_nodes)
     }
 
-    pub fn validate_hash(&self, root: H256, content_hash: H256, position: u64, num_leaf_nodes: u64) -> Result<()> {
+    pub fn validate_hash(
+        &self,
+        root: H256,
+        content_hash: H256,
+        position: u64,
+        num_leaf_nodes: u64,
+    ) -> Result<()> {
         self.validate_format()?;
 
         if content_hash != self.lemma[0] {
@@ -63,7 +75,7 @@ impl Proof {
     fn calculate_proof_position(&self, mut num_leaf_nodes: u64) -> u64 {
         let mut position = 0;
 
-        for (i, &is_left) in self.path.iter().rev().enumerate() {
+        for &is_left in self.path.iter().rev() {
             let left_side_depth = (num_leaf_nodes as f64).log2().ceil() as u64;
             let left_side_leaf_nodes = 2u64.pow(left_side_depth as u32) / 2;
 

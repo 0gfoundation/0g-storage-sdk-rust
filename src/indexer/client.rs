@@ -47,6 +47,8 @@ impl IndexerClient {
         datas: Vec<Arc<dyn IterableData>>,
         wait_for_log_entry: bool,
         opt: &BatchUploadOption,
+        flow_address: Option<ethers::types::Address>,
+        market_address: Option<ethers::types::Address>,
     ) -> Result<(H256, Vec<H256>)> {
         let expected_replica = opt
             .data_options
@@ -66,20 +68,23 @@ impl IndexerClient {
                     w3_client.clone(),
                     expected_replica as usize,
                     &dropped,
+                    flow_address,
+                    market_address,
                 )
                 .await?;
             // try batch upload
             match uploader
                 .batch_upload(datas.clone(), wait_for_log_entry, opt)
-                .await {
-                    Ok((hash, roots)) => {
-                        return Ok((hash, roots));
-                    }
-                    Err(err) => {
-                        dropped.push(err.to_string());
-                        log::error!("Dropped problematic node and retry");
-                    }
+                .await
+            {
+                Ok((hash, roots)) => {
+                    return Ok((hash, roots));
                 }
+                Err(err) => {
+                    dropped.push(err.to_string());
+                    log::error!("Dropped problematic node and retry");
+                }
+            }
         }
     }
 
@@ -88,6 +93,8 @@ impl IndexerClient {
         w3_client: Web3Client,
         data: Arc<dyn IterableData>,
         opt: &UploadOption,
+        flow_address: Option<ethers::types::Address>,
+        market_address: Option<ethers::types::Address>,
     ) -> Result<H256> {
         let mut dropped = Vec::new();
         let mut expected_replica = 1;
@@ -100,6 +107,8 @@ impl IndexerClient {
                     w3_client.clone(),
                     expected_replica as usize,
                     &dropped,
+                    flow_address,
+                    market_address,
                 )
                 .await
             {
@@ -136,6 +145,8 @@ impl IndexerClient {
         w3_client: Web3Client,
         expected_replica: usize,
         dropped: &[String],
+        flow_address: Option<ethers::types::Address>,
+        market_address: Option<ethers::types::Address>,
     ) -> Result<Uploader> {
         let clients = self.select_nodes(expected_replica, dropped).await?;
         let urls: Vec<String> = clients
@@ -144,7 +155,7 @@ impl IndexerClient {
             .collect();
         log::info!("Get {} storage nodes from indexer: {:?}", urls.len(), urls);
 
-        Uploader::new(w3_client, clients).await
+        Uploader::new_with_addresses(w3_client, clients, flow_address, market_address).await
     }
 
     pub async fn select_nodes(
@@ -220,35 +231,46 @@ impl IndexerClient {
     pub async fn download(&self, root: H256, file: &PathBuf, with_proof: bool) -> Result<()> {
         let locations = self.get_file_locations(root).await?;
 
-        let mut clients = Vec::new();
-        if let Some(locations) = locations {
-            for location in locations {
-                let client = match ZgsClient::new(&location.url).await {
-                    Ok(client) => client,
-                    Err(e) => {
-                        log::error!(
-                            "Failed to initialize client of node {}: {}",
-                            location.url,
-                            e
-                        );
-                        continue;
-                    }
-                };
+        if locations.is_none() {
+            anyhow::bail!(
+                "File not found or shards incomplete, FindFile triggered, try again later"
+            );
+        }
 
-                match client.get_shard_config().await {
-                    Ok(config) if config.is_valid() => {
-                        clients.push(client);
-                    }
-                    _ => {
-                        log::error!("Failed to get valid shard config of node {}", client.url);
-                    }
+        let mut locations = locations.unwrap();
+
+        // Use select() to check shard coverage
+        let (selected, covered) = select(&mut locations, 1, true);
+        if !covered {
+            anyhow::bail!(
+                "File not found or shards incomplete, FindFile triggered, try again later"
+            );
+        }
+
+        let mut clients = Vec::new();
+        for location in selected {
+            let client = match ZgsClient::new(&location.url).await {
+                Ok(client) => client,
+                Err(_) => {
+                    log::debug!(
+                        "Failed to initialize client of node {}, dropped.",
+                        location.url
+                    );
+                    continue;
                 }
-            }
+            };
+
+            clients.push(client);
         }
 
         if clients.is_empty() {
-            anyhow::bail!("No node holding the file found. FindFile triggered, try again later");
+            anyhow::bail!("No node holding the file found, FindFile triggered, try again later");
         }
+
+        log::info!(
+            "Get storage nodes from indexer: {:?}",
+            clients.iter().map(|c| &c.url).collect::<Vec<_>>()
+        );
 
         let downloader = Downloader::new(clients)?;
 

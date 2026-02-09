@@ -44,10 +44,25 @@ impl RpcClient {
 
         let mut retry_count = 0;
         loop {
-            match self.client.request(method, Some(ParamsSer::Array(params.clone()))).await {
-                Ok(result) => break Ok(result),
+            match self
+                .client
+                .request(method, Some(ParamsSer::Array(params.clone())))
+                .await
+            {
+                Ok(result) => {
+                    log::debug!("RPC {}: Success", method);
+                    break Ok(result);
+                }
                 Err(e) => {
                     retry_count += 1;
+                    log::error!(
+                        "RPC {} failed (attempt {}/{}): {} (url: {})",
+                        method,
+                        retry_count,
+                        self.rpc_config.retry_count,
+                        e,
+                        self.url
+                    );
                     if retry_count >= self.rpc_config.retry_count {
                         break Err(e);
                     }
@@ -64,9 +79,20 @@ impl RpcClient {
         let mut retry_count = 0;
         loop {
             match self.client.request(method, rpc_params![]).await {
-                Ok(result) => break Ok(result),
+                Ok(result) => {
+                    log::debug!("RPC {}: Success", method);
+                    break Ok(result);
+                }
                 Err(e) => {
                     retry_count += 1;
+                    log::error!(
+                        "RPC {} failed (attempt {}/{}): {} (url: {})",
+                        method,
+                        retry_count,
+                        self.rpc_config.retry_count,
+                        e,
+                        self.url
+                    );
                     if retry_count >= self.rpc_config.retry_count {
                         break Err(e);
                     }
@@ -98,9 +124,9 @@ pub fn validate_url(url: &str) -> Result<String> {
     if let Some(url_str) = url.to_string().strip_suffix("/") {
         if url.port().is_none() {
             let default_port = if url.scheme() == "https" { 443 } else { 80 };
-            return Ok(format!("{}:{}", url_str, default_port));
+            Ok(format!("{}:{}", url_str, default_port))
         } else {
-            return Ok(url_str.to_string());
+            Ok(url_str.to_string())
         }
     } else {
         anyhow::bail!("strip suffix error")

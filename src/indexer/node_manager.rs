@@ -54,13 +54,15 @@ impl NodeManager {
                     } else {
                         log::warn!(
                             "Invalid shard config retrieved from trusted storage node {}: {:?}",
-                            client.url, config
+                            client.url,
+                            config
                         );
                     }
                 }
                 Err(e) => log::error!(
                     "Failed to retrieve shard config from trusted storage node {}, error: {}",
-                    client.url, e
+                    client.url,
+                    e
                 ),
             }
         }
@@ -126,7 +128,9 @@ impl NodeManager {
                         Ok(node) => {
                             log::info!(
                                 "New peer discovered: url={}, shard={:?}, latency={}",
-                                url, node.config, node.latency
+                                url,
+                                node.config,
+                                node.latency
                             );
                             num_new += 1;
                         }
@@ -186,12 +190,13 @@ impl NodeManager {
         let start = Instant::now();
 
         for url in &urls {
-            match self.update_node(&url).await {
+            match self.update_node(url).await {
                 Ok(_) => {}
                 Err(e) => {
                     log::error!(
                         "Failed to update shard config for {}, removing from cache: {}",
-                        url, e
+                        url,
+                        e
                     );
                     self.discovered.write().unwrap().remove(url);
                 }

@@ -1,8 +1,8 @@
-use std::sync::Arc;
-use anyhow::{Result, anyhow, Context};
+use super::dataflow::{merkle_tree, IterableData, DEFAULT_CHUNK_SIZE, DEFAULT_SEGMENT_SIZE};
+use super::iterator::{iterator_padded_size, Iterator as CustomIterator};
+use anyhow::{anyhow, Context, Result};
 use ethers::types::H256;
-use super::dataflow::{IterableData, DEFAULT_CHUNK_SIZE, DEFAULT_SEGMENT_SIZE, merkle_tree};
-use super::iterator::{Iterator as CustomIterator, iterator_padded_size};
+use std::sync::Arc;
 
 pub struct DataInMemory {
     underlying: Vec<u8>,
@@ -51,7 +51,7 @@ impl IterableData for DataInMemory {
             batch % DEFAULT_CHUNK_SIZE as i64 == 0,
             "Batch size must align with chunk size"
         );
-        
+
         Box::new(MemoryDataIterator::new(
             &self.underlying,
             offset,
@@ -65,11 +65,11 @@ impl IterableData for DataInMemory {
         if offset < 0 || offset as usize >= self.underlying.len() {
             return Ok(0);
         }
-        
+
         let available_data = &self.underlying[offset as usize..];
         let n = std::cmp::min(buf.len(), available_data.len());
         buf[..n].copy_from_slice(&available_data[..n]);
-        
+
         Ok(n)
     }
 }
@@ -125,7 +125,7 @@ impl<'a> CustomIterator for MemoryDataIterator<'a> {
         let start = self.offset as usize;
         let available_data = &self.data[start..];
         let n = std::cmp::min(expected_buf_size, available_data.len());
-        
+
         self.buf[..n].copy_from_slice(&available_data[..n]);
         self.buf_size = n;
         self.offset += n as i64;
@@ -156,10 +156,10 @@ mod tests {
     fn test_data_in_memory_basic() {
         let data = vec![1, 2, 3, 4, 5];
         let mem_data = DataInMemory::new(data.clone()).unwrap();
-        
+
         assert_eq!(mem_data.size(), 5);
         assert!(mem_data.padded_size() >= 5);
-        
+
         let mut buf = vec![0; 3];
         let n = mem_data.read(&mut buf, 1).unwrap();
         assert_eq!(n, 3);
@@ -170,7 +170,7 @@ mod tests {
     fn test_memory_iterator() {
         let data = vec![1, 2, 3, 4, 5];
         let mem_data = DataInMemory::new(data).unwrap();
-        
+
         let mut iterator = mem_data.iterate(0, DEFAULT_CHUNK_SIZE as i64, true);
         assert!(iterator.next().unwrap());
         let current = iterator.current();

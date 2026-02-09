@@ -12,6 +12,12 @@ type SyncFunc = Arc<dyn Fn() -> Result<()> + Send + Sync>;
 
 pub struct Scheduler;
 
+impl Default for Scheduler {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl Scheduler {
     pub fn new() -> Self {
         Self
@@ -44,7 +50,7 @@ impl Scheduler {
         let action = Arc::new(move || {
             Box::pin(action()) as Pin<Box<dyn Future<Output = Result<()>> + Send>>
         });
-    
+
         tokio::spawn(async move {
             if let Err(err) = action().await {
                 error!("{}: {}", error_message, err);
@@ -272,7 +278,10 @@ mod tests {
             )
             .await;
         assert!(result.is_err());
-        assert!(result.unwrap_err().to_string().contains("deadline has elapsed"));
+        assert!(result
+            .unwrap_err()
+            .to_string()
+            .contains("deadline has elapsed"));
     }
 
     #[tokio::test]

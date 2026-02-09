@@ -1,8 +1,8 @@
-use std::fs::{File, OpenOptions, rename};
-use std::path::PathBuf;
-use anyhow::{Result, Context, ensure};
-use ethers::types::H256;
 use super::metadata::Metadata;
+use anyhow::{ensure, Context, Result};
+use ethers::types::H256;
+use std::fs::{rename, File, OpenOptions};
+use std::path::Path;
 
 const DOWNLOADING_FILE_SUFFIX: &str = ".download";
 
@@ -13,13 +13,14 @@ pub struct DownloadingFile {
 }
 
 impl DownloadingFile {
-    pub fn create(file: &PathBuf, root: H256, size: usize) -> Result<Self> {
+    pub fn create(file: &Path, root: H256, size: usize) -> Result<Self> {
         let file_name = file.to_str().unwrap();
         let download_filename = format!("{}{}", file_name, DOWNLOADING_FILE_SUFFIX);
         let mut file = OpenOptions::new()
             .read(true)
             .write(true)
             .create(true)
+            .truncate(true)
             .open(&download_filename)
             .context("Failed to open file")?;
 
@@ -31,8 +32,18 @@ impl DownloadingFile {
             Metadata::load(&mut file)?
         };
 
-        ensure!(metadata.root == root, "Root mismatch, expected = {:?}, actual = {:?}", root, metadata.root);
-        ensure!(metadata.size == size, "File size mismatch, expected = {}, actual = {}", size, metadata.size);
+        ensure!(
+            metadata.root == root,
+            "Root mismatch, expected = {:?}, actual = {:?}",
+            root,
+            metadata.root
+        );
+        ensure!(
+            metadata.size == size,
+            "File size mismatch, expected = {}, actual = {}",
+            size,
+            metadata.size
+        );
 
         Ok(Self {
             file_name: file_name.to_string(),
@@ -46,17 +57,25 @@ impl DownloadingFile {
     }
 
     pub fn write(&mut self, data: &[u8]) -> Result<()> {
-        let file = self.underlying.as_mut()
+        let file = self
+            .underlying
+            .as_mut()
             .ok_or_else(|| anyhow::anyhow!("File already sealed"))?;
-        
+
         self.metadata.write(file, data)
     }
 
     pub fn seal(&mut self) -> Result<()> {
-        ensure!(self.metadata.offset >= self.metadata.size, 
-            "Download incomplete, offset = {}, size = {}", self.metadata.offset, self.metadata.size);
+        ensure!(
+            self.metadata.offset >= self.metadata.size,
+            "Download incomplete, offset = {}, size = {}",
+            self.metadata.offset,
+            self.metadata.size
+        );
 
-        let file = self.underlying.as_mut()
+        let file = self
+            .underlying
+            .as_mut()
             .ok_or_else(|| anyhow::anyhow!("File already sealed"))?;
 
         file.set_len(self.metadata.size as u64)
@@ -64,8 +83,11 @@ impl DownloadingFile {
 
         drop(self.underlying.take());
 
-        rename(format!("{}{}", self.file_name, DOWNLOADING_FILE_SUFFIX), &self.file_name)
-            .context("Failed to rename downloading file")?;
+        rename(
+            format!("{}{}", self.file_name, DOWNLOADING_FILE_SUFFIX),
+            &self.file_name,
+        )
+        .context("Failed to rename downloading file")?;
 
         Ok(())
     }

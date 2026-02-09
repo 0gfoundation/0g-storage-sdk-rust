@@ -1,11 +1,11 @@
 use ethers::types::{Address, H256, U256};
+use libp2p::Multiaddr;
 use serde::{Deserialize, Serialize};
 use std::collections::HashSet;
 use std::net::IpAddr;
-use libp2p::Multiaddr;
 
-use crate::core::merkle::proof::Proof;
 use crate::common::shard::ShardConfig;
+use crate::core::merkle::proof::Proof;
 
 // NetworkProtocolVersion: P2P network protocol version.
 #[derive(Serialize, Deserialize, Debug)]
@@ -35,7 +35,7 @@ pub struct Status {
 }
 
 // Transaction: On-chain transaction about a file.
-#[derive(Serialize, Deserialize, Debug)]
+#[derive(Serialize, Deserialize, Debug, Clone)]
 #[serde(rename_all = "camelCase")]
 pub struct Transaction {
     pub stream_ids: Vec<U256>,
@@ -47,7 +47,7 @@ pub struct Transaction {
 }
 
 // FileInfo: Information about a file responded from 0g storage node.
-#[derive(Serialize, Deserialize, Debug)]
+#[derive(Serialize, Deserialize, Debug, Clone)]
 #[serde(rename_all = "camelCase")]
 pub struct FileInfo {
     pub tx: Transaction,
@@ -71,7 +71,6 @@ pub struct SegmentWithProof {
     /// File size
     pub file_size: usize,
 }
-
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct Segment(#[serde(with = "base64")] pub Vec<u8>);
