@@ -1,6 +1,7 @@
 use crate::common::blockchain::rpc::must_new_web3;
 use crate::common::utils::duration_from_str;
-use crate::core::dataflow::merkle_tree;
+use crate::core::dataflow::{merkle_tree, IterableData};
+use crate::core::encrypted_data::EncryptedData;
 use crate::core::file::File;
 use crate::indexer::client::IndexerClient;
 use crate::node::client_zgs::must_new_zgs_clients;
@@ -113,6 +114,12 @@ pub struct UploadArgs {
 
     #[arg(long, help = "Market contract address (requires flow-address)")]
     pub market_address: Option<String>,
+
+    #[arg(
+        long,
+        help = "Hex-encoded AES-256 encryption key (64 hex chars, optional 0x prefix)"
+    )]
+    pub encryption_key: Option<String>,
 }
 
 pub async fn run_upload(args: &UploadArgs) -> Result<()> {
@@ -121,7 +128,22 @@ pub async fn run_upload(args: &UploadArgs) -> Result<()> {
         anyhow::bail!("--market-address requires --flow-address to be provided");
     }
 
-    let file = Arc::new(File::open(&args.file)?);
+    let file: Arc<dyn IterableData> = if let Some(key_hex) = &args.encryption_key {
+        let key_hex = key_hex.strip_prefix("0x").unwrap_or(key_hex);
+        let key_bytes = hex::decode(key_hex).context("Invalid encryption key hex")?;
+        if key_bytes.len() != 32 {
+            anyhow::bail!(
+                "Encryption key must be 32 bytes (64 hex chars), got {} bytes",
+                key_bytes.len()
+            );
+        }
+        let mut key = [0u8; 32];
+        key.copy_from_slice(&key_bytes);
+        let raw_file = Arc::new(File::open(&args.file)?);
+        Arc::new(EncryptedData::new(raw_file, key)?)
+    } else {
+        Arc::new(File::open(&args.file)?)
+    };
     let tree = merkle_tree(file.clone()).await?;
     let root = tree.root();
 

@@ -9,7 +9,7 @@ use crate::common::{
 };
 use crate::core::dataflow::IterableData;
 use crate::node::client_zgs::{must_new_zgs_client, ZgsClient};
-use crate::transfer::downloader::Downloader;
+use crate::transfer::downloader::{DownloadContext, Downloader};
 use crate::transfer::uploader::{Uploader, Web3Client};
 
 use anyhow::Result;
@@ -21,8 +21,25 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Instant;
 
+#[derive(Clone)]
+pub struct IndexerClientOption {
+    /// Number of routines for concurrent downloads/uploads
+    pub routines: usize,
+}
+
+impl Default for IndexerClientOption {
+    fn default() -> Self {
+        Self {
+            routines: std::thread::available_parallelism()
+                .map(|n| n.get())
+                .unwrap_or(1),
+        }
+    }
+}
+
 pub struct IndexerClient {
     client: RpcClient,
+    option: IndexerClientOption,
 }
 
 impl Deref for IndexerClient {
@@ -35,10 +52,14 @@ impl Deref for IndexerClient {
 
 impl IndexerClient {
     pub async fn new(url: &str) -> Result<Self> {
+        Self::new_with_option(url, IndexerClientOption::default()).await
+    }
+
+    pub async fn new_with_option(url: &str, option: IndexerClientOption) -> Result<Self> {
         let url = validate_url(url)?;
         let rpc_config = GLOBAL_OPTION.lock().await.rpc_config.clone();
         let client = RpcClient::new(&url, &rpc_config)?;
-        Ok(Self { client })
+        Ok(Self { client, option })
     }
 
     pub async fn batch_upload(
@@ -272,9 +293,137 @@ impl IndexerClient {
             clients.iter().map(|c| &c.url).collect::<Vec<_>>()
         );
 
-        let downloader = Downloader::new(clients)?;
+        let downloader = Downloader::new(clients, self.option.routines)?;
 
         downloader.download(root, file, with_proof).await
+    }
+
+    /// Resolve storage nodes and file metadata, returning a reusable
+    /// `DownloadContext` for downloading multiple segments without repeated
+    /// indexer queries.
+    ///
+    /// Exactly one of `root` or `tx_seq` must be provided.
+    pub async fn get_download_context(
+        &self,
+        root: Option<H256>,
+        tx_seq: Option<u64>,
+    ) -> Result<DownloadContext> {
+        match (root, tx_seq) {
+            (Some(_), Some(_)) => anyhow::bail!("Cannot specify both root and tx_seq"),
+            (None, None) => anyhow::bail!("Must specify either root or tx_seq"),
+            _ => {}
+        }
+
+        let (clients, file_info, file_root) = if let Some(root) = root {
+            let locations = self.get_file_locations(root).await?;
+            if locations.is_none() {
+                anyhow::bail!(
+                    "File not found or shards incomplete, FindFile triggered, try again later"
+                );
+            }
+
+            let mut locations = locations.unwrap();
+            let (selected, covered) = select(&mut locations, 1, true);
+            if !covered {
+                anyhow::bail!(
+                    "File not found or shards incomplete, FindFile triggered, try again later"
+                );
+            }
+
+            let mut clients = Vec::new();
+            for location in selected {
+                if let Ok(client) = ZgsClient::new(&location.url).await {
+                    clients.push(client);
+                }
+            }
+            if clients.is_empty() {
+                anyhow::bail!("No node holding the file found");
+            }
+
+            let info = clients[0].get_file_info(root).await?;
+            if info.is_none() {
+                anyhow::bail!("File info not found for root {:?}", root);
+            }
+            (clients, info.unwrap(), root)
+        } else {
+            let ShardedNodes { trusted, .. } = self.get_shard_nodes().await?;
+            let valid_nodes = if let Some(trusted) = trusted {
+                self.validate_nodes(trusted, &[]).await?
+            } else {
+                Vec::new()
+            };
+
+            let futures: Vec<_> = valid_nodes
+                .into_iter()
+                .flatten()
+                .map(|node| async move {
+                    Result::<ZgsClient, anyhow::Error>::Ok(must_new_zgs_client(&node.url).await)
+                })
+                .collect();
+            let clients: Vec<ZgsClient> = try_join_all(futures).await?;
+            if clients.is_empty() {
+                anyhow::bail!("No storage nodes available");
+            }
+
+            let info = clients[0].get_file_info_by_tx_seq(tx_seq.unwrap()).await?;
+            if info.is_none() {
+                anyhow::bail!("File info not found for tx_seq {}", tx_seq.unwrap());
+            }
+            let info = info.unwrap();
+            let file_root = info.tx.data_merkle_root;
+            (clients, info, file_root)
+        };
+
+        log::info!(
+            "Resolved {} storage nodes for download context: {:?}",
+            clients.len(),
+            clients.iter().map(|c| &c.url).collect::<Vec<_>>()
+        );
+
+        DownloadContext::new(clients, self.option.routines, file_info, file_root)
+    }
+
+    /// Download a specific segment by either root hash or transaction sequence number.
+    ///
+    /// For downloading many segments of the same file, prefer `get_download_context()`
+    /// to avoid repeated node resolution.
+    pub async fn download_segment(
+        &self,
+        root: Option<H256>,
+        tx_seq: Option<u64>,
+        segment_index: u64,
+        with_proof: bool,
+        clients: Option<Vec<ZgsClient>>,
+    ) -> Result<(Vec<u8>, H256)> {
+        if let Some(clients) = clients {
+            // Pre-selected clients path
+            if clients.is_empty() {
+                anyhow::bail!("Provided clients list is empty");
+            }
+            let info = if let Some(root) = root {
+                clients[0].get_file_info(root).await?
+            } else if let Some(tx_seq) = tx_seq {
+                clients[0].get_file_info_by_tx_seq(tx_seq).await?
+            } else {
+                anyhow::bail!("Must specify either root or tx_seq");
+            };
+            if info.is_none() {
+                anyhow::bail!("File info not found");
+            }
+            let info = info.unwrap();
+            let file_root = info.tx.data_merkle_root;
+
+            let downloader = Downloader::new(clients, self.option.routines)?;
+            let segment = downloader
+                .download_segment(file_root, info.tx.seq, segment_index, with_proof, &info)
+                .await?;
+            Ok((segment, file_root))
+        } else {
+            // Delegate to get_download_context for indexer-resolved path
+            let ctx = self.get_download_context(root, tx_seq).await?;
+            let segment = ctx.download_segment(segment_index, with_proof).await?;
+            Ok((segment, ctx.file_root()))
+        }
     }
 
     pub async fn get_file_locations(&self, root: H256) -> ZgRpcResult<Option<Vec<ShardedNode>>> {

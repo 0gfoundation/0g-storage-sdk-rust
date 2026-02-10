@@ -3,7 +3,7 @@ use clap::Parser;
 use std::collections::HashMap;
 
 use zg_storage_client::cmd::{
-    download, generate_file, indexer, kv_read, kv_write,
+    download, download_segment, generate_file, indexer, kv_read, kv_write,
     root::{Cli, Commands},
     upload,
 };
@@ -48,6 +48,10 @@ async fn main() -> Result<()> {
         Some(Commands::Download(download_args)) => {
             log::info!("Downloading file from ZeroGStorage network");
             download::run_download(download_args).await
+        }
+        Some(Commands::DownloadSegment(args)) => {
+            log::info!("Downloading segment from ZeroGStorage network");
+            download_segment::run_download_segment(args).await
         }
         Some(Commands::Gateway) => {
             println!("Starting gateway service");

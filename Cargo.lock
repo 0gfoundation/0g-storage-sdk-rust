@@ -6302,6 +6302,7 @@ dependencies = [
 name = "zg-storage-client"
 version = "0.1.0"
 dependencies = [
+ "aes",
  "anyhow",
  "async-trait",
  "base64 0.13.1",
@@ -6309,6 +6310,7 @@ dependencies = [
  "chrono",
  "clap",
  "ctor",
+ "ctr",
  "dashmap",
  "env_logger",
  "ethers",

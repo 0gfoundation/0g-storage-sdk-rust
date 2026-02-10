@@ -1,4 +1,5 @@
 pub mod download;
+pub mod download_segment;
 pub mod generate_file;
 pub mod indexer;
 pub mod kv_read;

@@ -4,8 +4,10 @@ version = "0.1.0"
 edition = "2021"
 
 [dependencies]
+aes = { version = "0.8" }
 anyhow = { version = "1.0" }
 async-trait = { version = "0.1" }
+ctr = { version = "0.9" }
 base64 = { version = "0.13.0" }
 byteorder = { version = "1.4" }
 chrono = { version = "0.4" }

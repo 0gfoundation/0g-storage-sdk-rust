@@ -2,6 +2,7 @@ use clap::{Parser, Subcommand};
 use std::time::Duration;
 
 use super::download::DownloadArgs;
+use super::download_segment::DownloadSegmentArgs;
 use super::generate_file::GenerateArgs;
 use super::indexer::IndexerArgs;
 use super::kv_read::KvReadArgs;
@@ -91,6 +92,8 @@ pub enum Commands {
     },
     #[command(about = "Download file from ZeroGStorage network")]
     Download(DownloadArgs),
+    #[command(about = "Download a specific segment from ZeroGStorage network")]
+    DownloadSegment(DownloadSegmentArgs),
     #[command(about = "Start gateway service")]
     Gateway,
     #[command(about = "Generate a temp file for test purpose")]

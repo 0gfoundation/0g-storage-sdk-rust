@@ -118,6 +118,7 @@ class ClientTestFramework(TestFramework):
         file_to_upload,
         fragment_size=None,
         skip_tx=True,
+        encryption_key=None,
     ):
         upload_args = [
             self.cli_binary,
@@ -140,6 +141,9 @@ class ClientTestFramework(TestFramework):
         if fragment_size is not None:
             upload_args.append("--fragment-size")
             upload_args.append(str(fragment_size))
+        if encryption_key is not None:
+            upload_args.append("--encryption-key")
+            upload_args.append(encryption_key)
 
         upload_args.append("--file")
         self.log.info("upload file with cli: {}".format(upload_args))
@@ -194,6 +198,7 @@ class ClientTestFramework(TestFramework):
         file_to_download=None,
         with_proof=True,
         remove=True,
+        encryption_key=None,
     ):
         if file_to_download is None:
             file_to_download = os.path.join(
@@ -222,6 +227,9 @@ class ClientTestFramework(TestFramework):
         elif indexer_url is not None:
             download_args.append("--indexer")
             download_args.append(indexer_url)
+        if encryption_key is not None:
+            download_args.append("--encryption-key")
+            download_args.append(encryption_key)
         self.log.info("download file with cli: {}".format(download_args))
 
         output = tempfile.NamedTemporaryFile(
@@ -259,6 +267,77 @@ class ClientTestFramework(TestFramework):
             os.remove(file_to_download)
 
         return
+
+    def _download_segment_use_cli(
+        self,
+        node_rpc_url,
+        indexer_url,
+        root=None,
+        tx_seq=None,
+        segment_index=0,
+        with_proof=True,
+        encryption_key=None,
+    ):
+        download_args = [
+            self.cli_binary,
+            "download-segment",
+            "--segment-index",
+            str(segment_index),
+            "--proof",
+            str(with_proof).lower(),
+            "--log-level",
+            "debug",
+        ]
+        if root is not None:
+            download_args.append("--root")
+            download_args.append(root)
+        if tx_seq is not None:
+            download_args.append("--tx-seq")
+            download_args.append(str(tx_seq))
+        if node_rpc_url is not None:
+            download_args.append("--node")
+            download_args.append(node_rpc_url)
+        elif indexer_url is not None:
+            download_args.append("--indexer")
+            download_args.append(indexer_url)
+        if encryption_key is not None:
+            download_args.append("--encryption-key")
+            download_args.append(encryption_key)
+        self.log.info("download segment with cli: {}".format(download_args))
+
+        output = tempfile.NamedTemporaryFile(
+            dir=self.root_dir, delete=False, prefix="zgs_client_output_"
+        )
+        output_name = output.name
+        output_fileno = output.fileno()
+
+        try:
+            proc = subprocess.Popen(
+                download_args,
+                text=True,
+                stdout=subprocess.PIPE,
+                stderr=output_fileno,
+            )
+
+            stdout, _ = proc.communicate(timeout=60)
+            return_code = proc.returncode
+        except Exception as ex:
+            self.log.error(
+                "Failed to download segment via CLI tool, output: %s", output_name
+            )
+            raise ex
+        finally:
+            output.close()
+
+        assert return_code == 0, (
+            "%s download segment failed, output: %s" % (self.cli_binary, output_name)
+        )
+
+        # stdout contains hex-encoded segment data (last non-empty line)
+        lines = [line.strip() for line in stdout.strip().split("\n") if line.strip()]
+        assert len(lines) > 0, "download-segment produced no output"
+        hex_data = lines[-1]
+        return bytes.fromhex(hex_data)
 
     def _kv_write_use_cli(
         self,

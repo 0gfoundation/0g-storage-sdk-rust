@@ -35,24 +35,12 @@ struct DownloadSegmentConfig<'a> {
 }
 
 impl Downloader {
-    pub fn new(clients: Vec<ZgsClient>) -> Result<Self> {
+    pub fn new(clients: Vec<ZgsClient>, routines: usize) -> Result<Self> {
         if clients.is_empty() {
             anyhow::bail!("Storage node not specified");
         }
 
-        let default_routines = std::thread::available_parallelism()
-            .map(|n| n.get())
-            .unwrap_or(1);
-
-        Ok(Self {
-            clients,
-            routines: default_routines,
-        })
-    }
-
-    pub fn with_routines(mut self, routines: usize) -> Self {
-        self.routines = routines;
-        self
+        Ok(Self { clients, routines })
     }
 
     pub async fn download(&self, root: H256, file: &PathBuf, with_proof: bool) -> Result<()> {
@@ -80,7 +68,66 @@ impl Downloader {
         Ok(())
     }
 
-    async fn query_file(&self, root: H256) -> Result<FileInfo> {
+    /// Download a specific segment by transaction sequence
+    ///
+    /// # Arguments
+    /// * `root` - The root hash of the file
+    /// * `tx_seq` - The transaction sequence number
+    /// * `segment_index` - File-relative segment index (0-based)
+    /// * `with_proof` - Whether to download with merkle proof verification
+    /// * `file_info` - File information containing size, start_entry_index, etc.
+    ///
+    /// # Returns
+    /// The segment data as a vector of bytes
+    pub async fn download_segment(
+        &self,
+        root: H256,
+        tx_seq: u64,
+        segment_index: u64,
+        with_proof: bool,
+        file_info: &FileInfo,
+    ) -> Result<Vec<u8>> {
+        let shard_configs = get_shard_configs(&self.clients).await?;
+
+        let start_segment_index =
+            file_info.tx.start_entry_index / DEFAULT_SEGMENT_MAX_CHUNKS as u64;
+        let end_segment_index = (file_info.tx.start_entry_index
+            + num_splits(file_info.tx.size as usize, DEFAULT_CHUNK_SIZE) as u64
+            - 1)
+            / DEFAULT_SEGMENT_MAX_CHUNKS as u64;
+
+        let num_segments = end_segment_index - start_segment_index + 1;
+        let num_chunks = num_splits(file_info.tx.size as usize, DEFAULT_CHUNK_SIZE) as u64;
+
+        // Validate file-relative segment_index is within range
+        if segment_index >= num_segments {
+            anyhow::bail!(
+                "Segment index {} out of range [0, {})",
+                segment_index,
+                num_segments
+            );
+        }
+
+        let segment = SegmentDownloader::download_segment_static(DownloadSegmentConfig {
+            clients: &self.clients,
+            shard_configs: &shard_configs,
+            task: segment_index,
+            routine: 0,
+            offset: 0,
+            start_segment_index,
+            end_segment_index,
+            num_chunks,
+            tx_seq,
+            with_proof,
+            root,
+            file_size: file_info.tx.size as usize,
+        })
+        .await?;
+
+        Ok(segment)
+    }
+
+    pub async fn query_file(&self, root: H256) -> Result<FileInfo> {
         for client in &self.clients {
             match client.get_file_info(root).await {
                 Ok(Some(info)) => {
@@ -97,6 +144,25 @@ impl Downloader {
             }
         }
         anyhow::bail!("File[{:?}] not found on any node", root)
+    }
+
+    pub async fn query_file_by_tx_seq(&self, tx_seq: u64) -> Result<FileInfo> {
+        for client in &self.clients {
+            match client.get_file_info_by_tx_seq(tx_seq).await {
+                Ok(Some(info)) => {
+                    return Ok(info);
+                }
+                Ok(None) => {
+                    log::error!("File[tx_seq={}] not found on node[{}]", tx_seq, client.url);
+                    continue;
+                }
+                Err(e) => {
+                    log::error!("Failed to get file info from node[{}]: {}", client.url, e);
+                    continue;
+                }
+            }
+        }
+        anyhow::bail!("File[tx_seq={}] not found on any node", tx_seq)
     }
 
     async fn check_existence(&self, root: H256, file: &PathBuf) -> Result<()> {
@@ -411,6 +477,48 @@ impl<'a> SegmentDownloader<'a> {
         } else {
             Ok(None)
         }
+    }
+}
+
+pub struct DownloadContext {
+    downloader: Downloader,
+    file_info: FileInfo,
+    file_root: H256,
+}
+
+impl DownloadContext {
+    pub fn new(
+        clients: Vec<ZgsClient>,
+        routines: usize,
+        file_info: FileInfo,
+        file_root: H256,
+    ) -> Result<Self> {
+        let downloader = Downloader::new(clients, routines)?;
+        Ok(Self {
+            downloader,
+            file_info,
+            file_root,
+        })
+    }
+
+    pub async fn download_segment(&self, segment_index: u64, with_proof: bool) -> Result<Vec<u8>> {
+        self.downloader
+            .download_segment(
+                self.file_root,
+                self.file_info.tx.seq,
+                segment_index,
+                with_proof,
+                &self.file_info,
+            )
+            .await
+    }
+
+    pub fn file_root(&self) -> H256 {
+        self.file_root
+    }
+
+    pub fn file_info(&self) -> &FileInfo {
+        &self.file_info
     }
 }
 
