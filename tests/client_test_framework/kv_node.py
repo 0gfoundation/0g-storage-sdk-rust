@@ -68,7 +68,8 @@ class KVNode(TestNode):
         self._wait_for_rpc_connection(lambda rpc: rpc.kv_getStatus() is not None)
 
     def start(self):
-        self.log.info("Start kv node %d", self.index)
+        rpc_port = arrange_port(PortCategory.ZGS_KV_RPC, self.index)
+        self.log.info("Start kv node %d [RPC: %d]", self.index, rpc_port)
         super().start()
 
     def check_equal(self, stream_id, key, value, version=None):

@@ -35,10 +35,6 @@ pub struct IPLocationManager {
 
 impl IPLocationManager {
     fn build_url(&self, ip: &str) -> String {
-        if ip == "127.0.0.1" || ip.eq_ignore_ascii_case("localhost") {
-            return format!("{}/json", self.base_url);
-        }
-
         if self.config.access_token.is_empty() {
             format!("{}/{}/json", self.base_url, ip)
         } else {
@@ -101,6 +97,18 @@ impl DefaultIPLocationManager {
 
     pub async fn query(ip: &str) -> Result<IPLocation> {
         log::info!("Starting query for IP: {}", ip);
+
+        // Skip external lookup for localhost/loopback addresses
+        if ip == "127.0.0.1" || ip.eq_ignore_ascii_case("localhost") || ip.starts_with("127.") {
+            log::info!("Returning localhost location for IP: {}", ip);
+            return Ok(IPLocation {
+                city: "localhost".to_string(),
+                region: "localhost".to_string(),
+                country: "localhost".to_string(),
+                loc: "0,0".to_string(),
+                timezone: "UTC".to_string(),
+            });
+        }
 
         // check cache
         if let Ok(items) = DefaultIPLocationManager::all().await {

@@ -23,6 +23,7 @@ from client_test_framework.kv_node import KVNode
 from utility.utils import (
     PortMin,
     PortCategory,
+    PORT_RANGE,
     arrange_port,
     is_windows_platform,
     wait_until,
@@ -441,7 +442,9 @@ class ClientTestFramework(TestFramework):
         if discover_node is not None:
             indexer_args.append("--node")
             indexer_args.append(discover_node)
-        self.log.info("start indexer with args: {}".format(indexer_args))
+
+        indexer_port = arrange_port(PortCategory.ZGS_INDEXER_RPC, 0)
+        self.log.info("start indexer [RPC: %d] with args: %s", indexer_port, indexer_args)
         data_dir = os.path.join(self.root_dir, "indexer0")
         os.mkdir(data_dir)
         stdout = tempfile.NamedTemporaryFile(
@@ -503,6 +506,10 @@ class ClientTestFramework(TestFramework):
         self.add_arguments(parser)
         self.options = parser.parse_args()
         PortMin.n = self.options.port_min
+
+        # Calculate and log port range
+        port_max = self.options.port_min + PORT_RANGE
+        print(f"[PORT INFO] Test assigned port range: {self.options.port_min}-{port_max-1} (range size: {PORT_RANGE})", flush=True)
 
         # Set up temp directory and start logging
         if self.options.tmpdir:
