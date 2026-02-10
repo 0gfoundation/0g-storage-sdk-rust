@@ -14,11 +14,14 @@ import traceback
 from pathlib import Path
 
 from eth_utils import encode_hex
-from test_framework.bsc_node import BSCNode
-from test_framework.contract_proxy import FlowContractProxy, MineContractProxy, RewardContractProxy
+from config.node_config import TX_PARAMS
+from test_framework.contract_proxy import (
+    FlowContractProxy,
+    MineContractProxy,
+    RewardContractProxy,
+)
 from test_framework.zgs_node import ZgsNode
 from test_framework.blockchain_node import BlockChainNodeType
-from test_framework.conflux_node import ConfluxNode, connect_sample_nodes
 from test_framework.zg_node import ZGNode, zg_node_init_genesis
 from utility.utils import PortMin, is_windows_platform, wait_until, assert_equal
 from utility.build_binary import build_cli
@@ -38,9 +41,6 @@ TEST_EXIT_FAILED = 1
 
 class TestFramework:
     def __init__(self, blockchain_node_type=BlockChainNodeType.ZG):
-        if "http_proxy" in os.environ:
-            del os.environ["http_proxy"]
-
         self.num_blockchain_nodes = 1
         self.num_nodes = 1
         self.blockchain_nodes = []
@@ -73,13 +73,17 @@ class TestFramework:
             root_dir, "target", "release", "zgs_node" + binary_ext
         )
         self.__default_zgs_cli_binary__ = os.path.join(
-            tests_dir, "tmp", "0g-storage-client"  + binary_ext
+            tests_dir, "tmp", "0g-storage-client" + binary_ext
         )
 
     def __setup_blockchain_node(self):
         if self.blockchain_node_type == BlockChainNodeType.ZG:
-            zg_node_init_genesis(self.blockchain_binary, self.root_dir, self.num_blockchain_nodes)
-            self.log.info("0gchain genesis initialized for %s nodes" % self.num_blockchain_nodes)
+            zg_node_init_genesis(
+                self.blockchain_binary, self.root_dir, self.num_blockchain_nodes
+            )
+            self.log.info(
+                "0gchain genesis initialized for %s nodes" % self.num_blockchain_nodes
+            )
 
         for i in range(self.num_blockchain_nodes):
             if i in self.blockchain_node_configs:
@@ -88,26 +92,7 @@ class TestFramework:
                 updated_config = {}
 
             node = None
-            if self.blockchain_node_type == BlockChainNodeType.BSC:
-                node = BSCNode(
-                    i,
-                    self.root_dir,
-                    self.blockchain_binary,
-                    updated_config,
-                    self.contract_path,
-                    self.log,
-                    60,
-                )
-            elif self.blockchain_node_type == BlockChainNodeType.Conflux:
-                node = ConfluxNode(
-                    i,
-                    self.root_dir,
-                    self.blockchain_binary,
-                    updated_config,
-                    self.contract_path,
-                    self.log,
-                )
-            elif self.blockchain_node_type == BlockChainNodeType.ZG:
+            if self.blockchain_node_type == BlockChainNodeType.ZG:
                 node = ZGNode(
                     i,
                     self.root_dir,
@@ -128,57 +113,32 @@ class TestFramework:
         for node in self.blockchain_nodes:
             node.wait_for_rpc_connection()
 
-        if self.blockchain_node_type == BlockChainNodeType.BSC:
-            enodes = set(
-                [node.admin_nodeInfo()["enode"] for node in self.blockchain_nodes[1:]]
-            )
-            for enode in enodes:
-                self.blockchain_nodes[0].admin_addPeer([enode])
-
-            # mine
-            self.blockchain_nodes[0].miner_start([1])
-
-            def wait_for_peer():
-                peers = self.blockchain_nodes[0].admin_peers()
-                for peer in peers:
-                    if peer["enode"] in enodes:
-                        enodes.remove(peer["enode"])
-
-                if enodes:
-                    for enode in enodes:
-                        self.blockchain_nodes[0].admin_addPeer([enode])
-                    return False
-
-                return True
-
-            wait_until(lambda: wait_for_peer())
-
-            for node in self.blockchain_nodes:
-                node.wait_for_start_mining()
-        elif self.blockchain_node_type == BlockChainNodeType.Conflux:
-            for node in self.blockchain_nodes:
-                node.wait_for_nodeid()
-
-            # make nodes full connected
-            if self.num_blockchain_nodes > 1:
-                connect_sample_nodes(self.blockchain_nodes, self.log)
-                # The default is `dev` mode with auto mining, so it's not guaranteed that blocks
-                # can be synced in time for `sync_blocks` to pass.
-                # sync_blocks(self.blockchain_nodes)
-        elif self.blockchain_node_type == BlockChainNodeType.ZG:
+        if self.blockchain_node_type == BlockChainNodeType.ZG:
             # wait for the first block
             self.log.debug("Wait for 0gchain node to generate first block")
             time.sleep(0.5)
             for node in self.blockchain_nodes:
-                wait_until(lambda: node.net_peerCount() == self.num_blockchain_nodes - 1)
+
+                def _peer_count_ok():
+                    peer_count = node.net_peerCount()
+                    if peer_count is None:
+                        return False
+                    if isinstance(peer_count, str):
+                        peer_count = int(peer_count, 16)
+                    return peer_count == self.num_blockchain_nodes - 1
+
+                wait_until(_peer_count_ok)
                 wait_until(lambda: node.eth_blockNumber() is not None)
                 wait_until(lambda: int(node.eth_blockNumber(), 16) > 0)
 
-        contract, tx_hash, mine_contract, reward_contract = self.blockchain_nodes[0].setup_contract(self.enable_market, self.mine_period, self.lifetime_seconds)
+        contract, tx_hash, mine_contract, reward_contract = self.blockchain_nodes[
+            0
+        ].setup_contract(self.enable_market, self.mine_period, self.lifetime_seconds)
         self.contract = FlowContractProxy(contract, self.blockchain_nodes)
         self.mine_contract = MineContractProxy(mine_contract, self.blockchain_nodes)
-        self.reward_contract = RewardContractProxy(reward_contract, self.blockchain_nodes)
-
+        self.reward_contract = RewardContractProxy(
+            reward_contract, self.blockchain_nodes
+        )
 
         for node in self.blockchain_nodes[1:]:
             node.wait_for_transaction(tx_hash)
@@ -210,27 +170,15 @@ class TestFramework:
                 time.sleep(1)
             node.start()
 
-        self.log.info("Wait the zgs_node launch for %d seconds", self.launch_wait_seconds)
+        self.log.info(
+            "Wait the zgs_node launch for %d seconds", self.launch_wait_seconds
+        )
         time.sleep(self.launch_wait_seconds)
-        
+
         for node in self.nodes:
             node.wait_for_rpc_connection()
 
     def add_arguments(self, parser: argparse.ArgumentParser):
-        parser.add_argument(
-            "--conflux-binary",
-            dest="conflux",
-            default=self.__default_conflux_binary__,
-            type=str,
-        )
-
-        parser.add_argument(
-            "--bsc-binary",
-            dest="bsc",
-            default=self.__default_geth_binary__,
-            type=str,
-        )
-
         parser.add_argument(
             "--zg-binary",
             dest="zg",
@@ -330,20 +278,101 @@ class TestFramework:
         self.log.addHandler(ch)
 
     def _check_cli_binary(self):
-        if Path(self.cli_binary).absolute() == Path(self.__default_zgs_cli_binary__).absolute() and not os.path.exists(self.cli_binary):
+        if Path(self.cli_binary).absolute() == Path(
+            self.__default_zgs_cli_binary__
+        ).absolute() and not os.path.exists(self.cli_binary):
             dir = Path(self.cli_binary).parent.absolute()
             build_cli(dir)
-        
+
         assert os.path.exists(self.cli_binary), (
             "zgs CLI binary not found: %s" % self.cli_binary
         )
 
+    def _upload_file_use_cli(
+        self,
+        blockchain_node_rpc_url,
+        contract_address,
+        key,
+        ionion_node_rpc_url,
+        file_to_upload,
+    ):
+        self._check_cli_binary()
+
+        upload_args = [
+            self.cli_binary,
+            "upload",
+            "--url",
+            blockchain_node_rpc_url,
+            "--key",
+            encode_hex(key),
+            "--node",
+            ionion_node_rpc_url,
+            "--log-level",
+            "debug",
+            "--gas-limit",
+            "10000000",
+            "--file",
+        ]
+
+        output = tempfile.NamedTemporaryFile(
+            dir=self.root_dir, delete=False, prefix="zgs_client_output_"
+        )
+        output_name = output.name
+        output_fileno = output.fileno()
+
+        try:
+            proc = subprocess.Popen(
+                upload_args + [file_to_upload.name],
+                text=True,
+                stdout=output_fileno,
+                stderr=output_fileno,
+            )
+
+            return_code = proc.wait(timeout=60)
+
+            output.seek(0)
+            lines = output.readlines()
+            for line in lines:
+                line = line.decode("utf-8")
+                self.log.debug("line: %s", line)
+                if "root" in line:
+                    filtered_line = re.sub(
+                        r"\x1b\[([0-9,A-Z]{1,2}(;[0-9]{1,2})?(;[0-9]{3})?)?[m|K]?",
+                        "",
+                        line,
+                    )
+                    index = filtered_line.find("root=")
+                    if index > 0:
+                        root = filtered_line[index + 5 : index + 5 + 66]
+        except Exception as ex:
+            self.log.error(
+                "Failed to upload file via CLI tool, output: %s", output_name
+            )
+            raise ex
+        finally:
+            output.close()
+
+        assert return_code == 0, "%s upload file failed, output: %s, log: %s" % (
+            self.cli_binary,
+            output_name,
+            lines,
+        )
+
+        return root
+
     def __submit_file__(self, chunk_data: bytes) -> str:
-        submissions, data_root = create_submission(chunk_data)
+        submissions, data_root = create_submission(chunk_data, TX_PARAMS["from"])
         self.contract.submit(submissions)
         self.num_deployed_contracts += 1
-        wait_until(lambda: self.contract.num_submissions() == self.num_deployed_contracts)
-        self.log.info("Submission completed, data root: %s, submissions(%s) = %s", data_root, len(submissions), submissions)
+        wait_until(
+            lambda: self.contract.num_submissions() == self.num_deployed_contracts
+        )
+        self.log.info(
+            "Submission completed, data root: %s, submissions(%s) = %s",
+            data_root,
+            len(submissions),
+            submissions,
+        )
         return data_root
 
     def __upload_file__(self, node_index: int, random_data_size: int) -> str:
@@ -358,7 +387,9 @@ class TestFramework:
 
         # Upload file to storage node
         segments = submit_data(client, chunk_data)
-        self.log.info("segments: %s", [(s["root"], s["index"], s["proof"]) for s in segments])
+        self.log.info(
+            "segments: %s", [(s["root"], s["index"], s["proof"]) for s in segments]
+        )
         wait_until(lambda: client.zgs_get_file_info(data_root)["finalized"])
 
         return data_root
@@ -383,7 +414,6 @@ class TestFramework:
         self.nodes[index].stop()
         if clean:
             self.nodes[index].clean_data()
-
 
     def start_storage_node(self, index):
         self.nodes[index].start()
@@ -416,7 +446,7 @@ class TestFramework:
 
             if os.path.islink(dst):
                 os.remove(dst)
-            elif os.path.isdir(dst): 
+            elif os.path.isdir(dst):
                 shutil.rmtree(dst)
             elif os.path.exists(dst):
                 os.remove(dst)
@@ -424,11 +454,7 @@ class TestFramework:
             os.symlink(self.options.tmpdir, dst)
             self.log.info("Symlink: %s", Path(dst).absolute())
 
-        if self.blockchain_node_type == BlockChainNodeType.Conflux:
-            self.blockchain_binary = os.path.abspath(self.options.conflux)
-        elif self.blockchain_node_type == BlockChainNodeType.BSC:
-            self.blockchain_binary = os.path.abspath(self.options.bsc)
-        elif self.blockchain_node_type == BlockChainNodeType.ZG:
+        if self.blockchain_node_type == BlockChainNodeType.ZG:
             self.blockchain_binary = os.path.abspath(self.options.zg)
         else:
             raise NotImplementedError

@@ -23,7 +23,12 @@ pub struct DownloadArgs {
     #[arg(long, help = "Merkle root to download file")]
     pub root: String,
 
-    #[arg(long, help = "Whether to download with merkle proof for validation")]
+    #[arg(
+        long,
+        num_args = 1,
+        default_value = "false",
+        help = "Whether to download with merkle proof for validation"
+    )]
     pub proof: bool,
 
     #[arg(long, help = "Number of routines for downloading simultaneously")]

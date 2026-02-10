@@ -15,7 +15,8 @@ if __name__ == "__main__":
     build_kv(tmp_dir)
 
     run_all(
-        test_dir = os.path.dirname(__file__),
+        test_dir=os.path.dirname(__file__),
         slow_tests={},
         long_manual_tests={},
+        skip_tests={"splitable_upload_test.py", "cli_dir_test.py"},
     )

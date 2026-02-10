@@ -1,44 +1,53 @@
 import base64
 import inspect
+import os
 import platform
 import rtoml
 import time
-import sha3
+from enum import IntEnum
+from eth_utils import keccak
+
 
 class PortMin:
     # Must be initialized with a unique integer for each process
     n = 11000
 
 
-MAX_NODES = 100
+MAX_NODES = 10
 
 
-def p2p_port(n):
-    assert n <= MAX_NODES
-    return PortMin.n + n
+class PortCategory(IntEnum):
+    ZGS_P2P = 0
+    ZG_ETH_WS = 1
+    ZG_ETH_METRICS = 2
+    ZG_AUTHRPC = 3
+    ZG_NODE_API = 4
+    ZG_P2P = 5
+    ZG_DISCOVERY = 6
+    ZG_CONSENSUS_P2P = 7
+    ZGS_RPC = 8
+    ZGS_GRPC = 9
+    ZG_ETH_HTTP = 10
+    ZG_CONSENSUS_RPC = 11
+    ZG_BLOCKCHAIN_P2P = 12
+    ZG_BLOCKCHAIN_WS = 13
+    ZG_TENDERMINT_RPC = 14
+    ZG_PPROF = 15
+    ZGS_KV_RPC = 16
+    ZGS_INDEXER_RPC = 17
 
 
-def rpc_port(n):
-    return PortMin.n + MAX_NODES + n
+PORT_RANGE = (max(PortCategory) + 1) * MAX_NODES
 
 
-def blockchain_p2p_port(n):
-    return PortMin.n + 2 * MAX_NODES + n
+def arrange_port(category: PortCategory, node_index: int) -> int:
+    assert node_index <= MAX_NODES
+    return PortMin.n + int(category) * MAX_NODES + node_index
 
-
-def blockchain_rpc_port(n):
-    return PortMin.n + 3 * MAX_NODES + n
-
-
-def blockchain_rpc_port_core(n):
-    return PortMin.n + 4 * MAX_NODES + n
-
-def arrange_port(category: int, node_index: int) -> int:
-    return PortMin.n + (100 + category) * MAX_NODES + node_index
 
 def wait_until(predicate, *, attempts=float("inf"), timeout=float("inf"), lock=None):
     if attempts == float("inf") and timeout == float("inf"):
-        timeout = 6
+        timeout = 60
     attempt = 0
     time_end = time.time() + timeout
 
@@ -127,11 +136,10 @@ def assert_greater_than_or_equal(thing1, thing2):
     if thing1 < thing2:
         raise AssertionError("%s < %s" % (str(thing1), str(thing2)))
 
-# 14900K has the performance point 100 
+
+# 14900K has the performance point 100
 def estimate_st_performance():
-    hasher = sha3.keccak_256()
-    input =  b"\xcc" * (1<<26)
+    input = b"\xcc" * (1 << 26)
     start_time = time.perf_counter()
-    hasher.update(input)
-    digest = hasher.hexdigest()
+    digest = keccak(input).hex()
     return 10 / (time.perf_counter() - start_time)

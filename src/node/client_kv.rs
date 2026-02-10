@@ -1,6 +1,5 @@
 use anyhow::Result;
 use ethers::types::H256;
-use log::error;
 use serde_json::json;
 use std::ops::Deref;
 use thiserror::Error;

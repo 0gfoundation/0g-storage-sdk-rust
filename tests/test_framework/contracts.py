@@ -1,6 +1,7 @@
 from pathlib import Path
 import json
 
+
 def load_contract_metadata(path: str, name: str):
     path = Path(path)
     try:

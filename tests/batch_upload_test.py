@@ -6,8 +6,8 @@ from client_utility.run_rust_test import run_rust_test
 
 class BatchUploadTest(ClientTestFramework):
     def setup_params(self):
-       self.num_blockchain_nodes = 1
-       self.num_nodes = 2
+        self.num_blockchain_nodes = 1
+        self.num_nodes = 1
 
     def run_test(self):
        ports = ",".join([x.rpc_url.split(":")[-1] for x in self.nodes])

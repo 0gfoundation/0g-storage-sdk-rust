@@ -40,6 +40,7 @@ pub struct KvWriteArgs {
 
     #[arg(
         long,
+        num_args = 1,
         default_value = "true",
         help = "Skip sending the transaction on chain if already exists"
     )]

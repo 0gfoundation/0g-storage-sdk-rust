@@ -2,11 +2,11 @@ name: Setup Rust (cache & toolchain)
 runs:
   using: composite
   steps:
-    - name: Install stable toolchain
+    - name: Install Rust 1.93.0
       uses: actions-rs/toolchain@v1
       with:
         profile: minimal
-        toolchain: stable
+        toolchain: 1.93.0
         components: rustfmt, clippy
         override: true
 

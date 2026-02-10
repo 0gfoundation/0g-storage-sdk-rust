@@ -1,5 +1,6 @@
 use crate::common::blockchain::rpc::must_new_web3;
 use crate::common::utils::duration_from_str;
+use crate::core::dataflow::merkle_tree;
 use crate::core::file::File;
 use crate::indexer::client::IndexerClient;
 use crate::node::client_zgs::must_new_zgs_clients;
@@ -71,6 +72,7 @@ pub struct UploadArgs {
 
     #[arg(
         long,
+        num_args = 1,
         default_value = "true",
         help = "Skip sending the transaction on chain if already exists"
     )]
@@ -78,10 +80,17 @@ pub struct UploadArgs {
 
     #[arg(
         long,
+        num_args = 1,
         default_value = "false",
         help = "Wait for file finality on nodes to upload"
     )]
     pub finality_required: bool,
+
+    #[arg(
+        long,
+        help = "Fragment size for splitting file (not implemented yet, placeholder for compatibility)"
+    )]
+    pub fragment_size: Option<u64>,
 
     #[arg(
         long,
@@ -113,6 +122,8 @@ pub async fn run_upload(args: &UploadArgs) -> Result<()> {
     }
 
     let file = Arc::new(File::open(&args.file)?);
+    let tree = merkle_tree(file.clone()).await?;
+    let root = tree.root();
 
     let fee = U256::from(args.fee * 1e18 as u64);
     let nonce = U256::from(args.nonce);
@@ -162,5 +173,7 @@ pub async fn run_upload(args: &UploadArgs) -> Result<()> {
                 .await?;
         uploader.upload(file, &opt).await?;
     }
+
+    println!("root = 0x{}", hex::encode(root));
     Ok(())
 }

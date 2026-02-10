@@ -12,24 +12,33 @@ import tempfile
 import time
 import traceback
 import json
+import requests
+import socket
 from pathlib import Path
 
 from eth_utils import encode_hex
 from test_framework.test_framework import TestFramework
 from test_framework.blockchain_node import BlockChainNodeType
 from client_test_framework.kv_node import KVNode
-from utility.utils import PortMin, is_windows_platform, wait_until
-from client_utility.utils import indexer_port
-from client_utility.build_binary import build_kv
+from utility.utils import (
+    PortMin,
+    PortCategory,
+    arrange_port,
+    is_windows_platform,
+    wait_until,
+)
+
 
 class TestStatus(Enum):
     PASSED = 1
     FAILED = 2
 
+
 TEST_EXIT_PASSED = 0
 TEST_EXIT_FAILED = 1
 
 __file_path__ = os.path.dirname(os.path.realpath(__file__))
+
 
 class ClientTestFramework(TestFramework):
     def __init__(self, blockchain_node_type=BlockChainNodeType.ZG):
@@ -39,6 +48,7 @@ class ClientTestFramework(TestFramework):
 
         self.indexer_process = None
         self.indexer_rpc_url = None
+        self._kv_reserved_ports = set()
 
         # Set default binary path
         binary_ext = ".exe" if is_windows_platform() else ""
@@ -48,7 +58,7 @@ class ClientTestFramework(TestFramework):
             tests_dir, "tmp", "zgs_node" + binary_ext
         )
         self.__default_zgs_cli_binary__ = os.path.join(
-            root_dir, "0g-storage-client"  + binary_ext
+            tests_dir, "tmp", "0g-storage-client" + binary_ext
         )
         self.__default_zgs_kv_binary__ = os.path.join(
             tests_dir, "tmp", "zgs_kv" + binary_ext
@@ -105,35 +115,37 @@ class ClientTestFramework(TestFramework):
         node_rpc_url,
         indexer_url,
         file_to_upload,
-        skip_tx = True,
+        fragment_size=None,
+        skip_tx=True,
     ):
         upload_args = [
-            "cargo",
-            "run",
-            "--release",
-            "--",
-            "--gas-limit",
-            "10000000",
-            "--rpc-timeout",
-            "600",
+            self.cli_binary,
             "upload",
             "--url",
             blockchain_node_rpc_url,
             "--key",
-            encode_hex(key)
+            encode_hex(key),
+            "--skip-tx",
+            str(skip_tx).lower(),
+            "--log-level",
+            "debug",
         ]
-        if skip_tx:
-            upload_args.append("--skip-tx")
         if node_rpc_url is not None:
             upload_args.append("--node")
             upload_args.append(node_rpc_url)
         elif indexer_url is not None:
             upload_args.append("--indexer")
             upload_args.append(indexer_url)
+        if fragment_size is not None:
+            upload_args.append("--fragment-size")
+            upload_args.append(str(fragment_size))
+
         upload_args.append("--file")
         self.log.info("upload file with cli: {}".format(upload_args))
 
-        output = tempfile.NamedTemporaryFile(dir=self.root_dir, delete=False, prefix="zgs_client_output_")
+        output = tempfile.NamedTemporaryFile(
+            dir=self.root_dir, delete=False, prefix="zgs_client_output_"
+        )
         output_name = output.name
         output_fileno = output.fileno()
 
@@ -144,7 +156,7 @@ class ClientTestFramework(TestFramework):
                 stdout=output_fileno,
                 stderr=output_fileno,
             )
-            
+
             return_code = proc.wait(timeout=60)
 
             output.seek(0)
@@ -152,41 +164,57 @@ class ClientTestFramework(TestFramework):
             for line in lines:
                 line = line.decode("utf-8")
                 self.log.debug("line: %s", line)
-                if "root" in line:
-                    filtered_line = re.sub(r'\x1b\[([0-9,A-Z]{1,2}(;[0-9]{1,2})?(;[0-9]{3})?)?[m|K]?', '', line)
-                    index = filtered_line.find("root=")
-                    if index > 0:
-                        root = filtered_line[index + 5 : index + 5 + 66]
+                if "root = " in line:
+                    root = line.strip().split("root = ")[1]
+                if "roots = " in line:
+                    root = line.strip().split("roots = ")[1]
         except Exception as ex:
-            self.log.error("Failed to upload file via CLI tool, output: %s", output_name)
+            self.log.error(
+                "Failed to upload file via CLI tool, output: %s", output_name
+            )
             raise ex
         finally:
             output.close()
 
-        assert return_code == 0, "%s upload file failed, output: %s, log: %s" % (self.cli_binary, output_name, lines)
+        assert return_code == 0, "%s upload file failed, output: %s, log: %s" % (
+            self.cli_binary,
+            output_name,
+            lines,
+        )
 
         return root
-    
+
     def _download_file_use_cli(
         self,
         node_rpc_url,
         indexer_url,
-        root,
-        with_proof = True,
+        root=None,
+        roots=None,
+        file_to_download=None,
+        with_proof=True,
+        remove=True,
     ):
-        file_to_download = os.path.join(self.root_dir, "download_{}_{}".format(root, time.time()))
+        if file_to_download is None:
+            file_to_download = os.path.join(
+                self.root_dir, "download_{}_{}".format(root, time.time())
+            )
         download_args = [
-            "cargo",
-            "run",
-            "--release",
-            "--",
+            self.cli_binary,
             "download",
             "--file",
             file_to_download,
-            "--root",
-            root,
             "--proof",
+            str(with_proof).lower(),
+            "--log-level",
+            "debug",
         ]
+        if root is not None:
+            download_args.append("--root")
+            download_args.append(root)
+        elif roots is not None:
+            download_args.append("--roots")
+            download_args.append(roots)
+
         if node_rpc_url is not None:
             download_args.append("--node")
             download_args.append(node_rpc_url)
@@ -195,7 +223,9 @@ class ClientTestFramework(TestFramework):
             download_args.append(indexer_url)
         self.log.info("download file with cli: {}".format(download_args))
 
-        output = tempfile.NamedTemporaryFile(dir=self.root_dir, delete=False, prefix="zgs_client_output_")
+        output = tempfile.NamedTemporaryFile(
+            dir=self.root_dir, delete=False, prefix="zgs_client_output_"
+        )
         output_name = output.name
         output_fileno = output.fileno()
 
@@ -206,22 +236,29 @@ class ClientTestFramework(TestFramework):
                 stdout=output_fileno,
                 stderr=output_fileno,
             )
-            
+
             return_code = proc.wait(timeout=60)
             output.seek(0)
             lines = output.readlines()
         except Exception as ex:
-            self.log.error("Failed to download file via CLI tool, output: %s", output_name)
+            self.log.error(
+                "Failed to download file via CLI tool, output: %s", output_name
+            )
             raise ex
         finally:
             output.close()
 
-        assert return_code == 0, "%s download file failed, output: %s, log: %s" % (self.cli_binary, output_name, lines)
+        assert return_code == 0, "%s download file failed, output: %s, log: %s" % (
+            self.cli_binary,
+            output_name,
+            lines,
+        )
 
-        os.remove(file_to_download)
+        if remove:
+            os.remove(file_to_download)
 
         return
-    
+
     def _kv_write_use_cli(
         self,
         blockchain_node_rpc_url,
@@ -231,31 +268,28 @@ class ClientTestFramework(TestFramework):
         stream_id,
         kv_keys,
         kv_values,
-        skip_tx = True,
+        skip_tx=True,
     ):
         kv_write_args = [
-            "cargo",
-            "run",
-            "--release",
-            "--",
-            "--gas-limit",
-            "10000000",
-            "--rpc-timeout",
-            "600",
+            self.cli_binary,
             "kv-write",
             "--url",
             blockchain_node_rpc_url,
             "--key",
             encode_hex(key),
+            "--skip-tx",
+            str(skip_tx).lower(),
             "--stream-id",
             stream_id,
             "--stream-keys",
             kv_keys,
             "--stream-values",
-            kv_values
+            kv_values,
+            "--log-level",
+            "debug",
+            "--gas-limit",
+            "10000000",
         ]
-        if skip_tx:
-            kv_write_args.append("--skip-tx")
         if node_rpc_url is not None:
             kv_write_args.append("--node")
             kv_write_args.append(node_rpc_url)
@@ -264,7 +298,9 @@ class ClientTestFramework(TestFramework):
             kv_write_args.append(indexer_url)
         self.log.info("kv write with cli: {}".format(kv_write_args))
 
-        output = tempfile.NamedTemporaryFile(dir=self.root_dir, delete=False, prefix="zgs_client_output_")
+        output = tempfile.NamedTemporaryFile(
+            dir=self.root_dir, delete=False, prefix="zgs_client_output_"
+        )
         output_name = output.name
         output_fileno = output.fileno()
 
@@ -275,7 +311,7 @@ class ClientTestFramework(TestFramework):
                 stdout=output_fileno,
                 stderr=output_fileno,
             )
-            
+
             return_code = proc.wait(timeout=60)
 
             output.seek(0)
@@ -286,34 +322,32 @@ class ClientTestFramework(TestFramework):
         finally:
             output.close()
 
-        assert return_code == 0, "%s write kv failed, output: %s, log: %s" % (self.cli_binary, output_name, lines)
+        assert return_code == 0, "%s write kv failed, output: %s, log: %s" % (
+            self.cli_binary,
+            output_name,
+            lines,
+        )
 
         return
 
-    def _kv_read_use_cli(
-        self,
-        node_rpc_url,
-        stream_id,
-        kv_keys
-    ):
+    def _kv_read_use_cli(self, node_rpc_url, stream_id, kv_keys):
         kv_read_args = [
-            "cargo",
-            "run",
-            "--release",
-            "--",
-            "--rpc-timeout",
-            "600",
+            self.cli_binary,
             "kv-read",
             "--node",
             node_rpc_url,
             "--stream-id",
             stream_id,
             "--stream-keys",
-            kv_keys
+            kv_keys,
+            "--log-level",
+            "debug",
         ]
         self.log.info("kv read with cli: {}".format(kv_read_args))
 
-        output = tempfile.NamedTemporaryFile(dir=self.root_dir, delete=False, prefix="zgs_client_output_")
+        output = tempfile.NamedTemporaryFile(
+            dir=self.root_dir, delete=False, prefix="zgs_client_output_"
+        )
         output_name = output.name
         output_fileno = output.fileno()
 
@@ -324,7 +358,7 @@ class ClientTestFramework(TestFramework):
                 stdout=output_fileno,
                 stderr=output_fileno,
             )
-            
+
             return_code = proc.wait(timeout=60)
             output.seek(0)
             lines = output.readlines()
@@ -334,17 +368,41 @@ class ClientTestFramework(TestFramework):
         finally:
             output.close()
 
-        assert return_code == 0, "%s read kv failed, output: %s, log: %s" % (self.cli_binary, output_name, lines)
-        return json.loads(lines[-1].decode("utf-8").strip())
+        assert return_code == 0, "%s read kv failed, output: %s, log: %s" % (
+            self.cli_binary,
+            output_name,
+            lines,
+        )
+
+        decoded_lines = [
+            line.decode("utf-8", errors="replace").strip() for line in lines
+        ]
+        non_empty = [line for line in decoded_lines if line]
+        if not non_empty:
+            raise AssertionError(
+                "kv-read produced no output; full output: %s" % decoded_lines
+            )
+        # kv-read may print logs before the JSON payload; pick the last non-empty line.
+        try:
+            return json.loads(non_empty[-1])
+        except json.JSONDecodeError as ex:
+            raise AssertionError(
+                "kv-read output was not valid JSON. Last line: %s. Full output: %s"
+                % (non_empty[-1], non_empty)
+            ) from ex
 
     def setup_kv_node(self, index, stream_ids, updated_config={}):
-        build_kv(Path(self.kv_binary).parent.absolute())
+        local_config = dict(updated_config)
+        if "rpc_listen_address" not in local_config:
+            local_config["rpc_listen_address"] = (
+                f"127.0.0.1:{arrange_port(PortCategory.ZGS_KV_RPC, index)}"
+            )
         assert os.path.exists(self.kv_binary), "%s should be exist" % self.kv_binary
         node = KVNode(
             index,
             self.root_dir,
             self.kv_binary,
-            updated_config,
+            local_config,
             self.contract.address(),
             self.log,
             stream_ids=stream_ids,
@@ -355,20 +413,27 @@ class ClientTestFramework(TestFramework):
 
         time.sleep(1)
         node.wait_for_rpc_connection()
-    
-    def setup_indexer(self, trusted, discover_node, discover_ports = None):
+
+    @staticmethod
+    def _is_port_free(port, host="127.0.0.1"):
+        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
+            sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+            try:
+                sock.bind((host, port))
+            except OSError:
+                return False
+        return True
+
+    def setup_indexer(self, trusted, discover_node, discover_ports=None):
         indexer_args = [
-            "cargo",
-            "run",
-            "--release",
-            "--",
-            "--rpc-timeout",
-            "600",
+            self.cli_binary,
             "indexer",
             "--endpoint",
-            "{}".format(indexer_port(0)),
+            "{}".format(arrange_port(PortCategory.ZGS_INDEXER_RPC, 0)),
             "--trusted",
-            trusted
+            trusted,
+            "--log-level",
+            "debug",
         ]
         if discover_ports is not None:
             indexer_args.append("--discover-ports")
@@ -376,7 +441,6 @@ class ClientTestFramework(TestFramework):
         if discover_node is not None:
             indexer_args.append("--node")
             indexer_args.append(discover_node)
-
         self.log.info("start indexer with args: {}".format(indexer_args))
         data_dir = os.path.join(self.root_dir, "indexer0")
         os.mkdir(data_dir)
@@ -386,15 +450,27 @@ class ClientTestFramework(TestFramework):
         stderr = tempfile.NamedTemporaryFile(
             dir=data_dir, prefix="stderr", delete=False
         )
+
         self.indexer_process = subprocess.Popen(
             indexer_args,
             stdout=stdout,
             stderr=stderr,
-            text=True,
+            cwd=data_dir,
             env=os.environ.copy(),
         )
-        self.indexer_rpc_url = "http://127.0.0.1:{}".format(indexer_port(0))
-    
+        self.indexer_rpc_url = "http://127.0.0.1:{}".format(
+            arrange_port(PortCategory.ZGS_INDEXER_RPC, 0)
+        )
+
+        def is_port_available(url):
+            try:
+                response = requests.get(url, timeout=20)
+                return response.status_code is not None
+            except requests.RequestException:
+                return False
+
+        wait_until(lambda: is_port_available(self.indexer_rpc_url), timeout=20)
+
     def stop_indexer(self):
         if self.indexer_process is not None:
             self.indexer_process.terminate()
@@ -410,7 +486,7 @@ class ClientTestFramework(TestFramework):
 
         for node in self.kv_nodes:
             node.stop()
-        
+
         self.stop_indexer()
 
     def stop_kv_node(self, index):
@@ -434,7 +510,8 @@ class ClientTestFramework(TestFramework):
             os.makedirs(self.options.tmpdir, exist_ok=True)
         else:
             self.options.tmpdir = os.getenv(
-                "ZG_CLIENT_TESTS_LOG_DIR", default=tempfile.mkdtemp(prefix="zg_client_test_")
+                "ZG_CLIENT_TESTS_LOG_DIR",
+                default=tempfile.mkdtemp(prefix="zg_client_test_"),
             )
 
         self.root_dir = self.options.tmpdir
@@ -447,7 +524,7 @@ class ClientTestFramework(TestFramework):
 
             if os.path.islink(dst):
                 os.remove(dst)
-            elif os.path.isdir(dst): 
+            elif os.path.isdir(dst):
                 shutil.rmtree(dst)
             elif os.path.exists(dst):
                 os.remove(dst)

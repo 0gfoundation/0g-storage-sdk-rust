@@ -135,8 +135,8 @@ pub async fn run_indexer(args: &IndexerArgs) -> Result<()> {
 
     // Start server
     log::info!(
-        "Starting server at {}",
-        format!("127.0.0.1:{}", args.endpoint)
+        "Starting server at 127.0.0.1:{}",
+        args.endpoint
     );
     let server = HttpServerBuilder::default()
         .build(format!("127.0.0.1:{}", args.endpoint))

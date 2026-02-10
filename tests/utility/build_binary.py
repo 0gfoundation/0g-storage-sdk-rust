@@ -9,14 +9,15 @@ from enum import Enum, unique
 from utility.utils import is_windows_platform, wait_until
 
 # v1.0.0-ci release
-GITHUB_DOWNLOAD_URL="https://api.github.com/repos/0glabs/0g-storage-node/releases/152560136"
+GITHUB_DOWNLOAD_URL = (
+    "https://api.github.com/repos/0gfoundation/0g-storage-node/releases/276222268"
+)
 
-CONFLUX_BINARY = "conflux.exe" if is_windows_platform() else "conflux"
-BSC_BINARY = "geth.exe" if is_windows_platform() else "geth"
 ZG_BINARY = "0gchaind.exe" if is_windows_platform() else "0gchaind"
-CLIENT_BINARY = "0g-storage-client.exe" if is_windows_platform() else "0g-storage-client"
+CLIENT_BINARY = (
+    "0g-storage-client.exe" if is_windows_platform() else "0g-storage-client"
+)
 
-CLI_GIT_REV = "98d74b7e7e6084fc986cb43ce2c66692dac094a6"
 
 @unique
 class BuildBinaryResult(Enum):
@@ -24,40 +25,6 @@ class BuildBinaryResult(Enum):
     Installed = 1
     NotInstalled = 2
 
-def build_conflux(dir: str) -> BuildBinaryResult:
-    # Download or build conflux binary if absent
-    result = __download_from_github(
-        dir=dir,
-        binary_name=CONFLUX_BINARY,
-        github_url=GITHUB_DOWNLOAD_URL, 
-        asset_name=__asset_name(CONFLUX_BINARY, zip=True),
-    )
-
-    if result == BuildBinaryResult.AlreadyExists or result == BuildBinaryResult.Installed:
-        return result
-
-    return __build_from_github(
-        dir=dir,
-        binary_name=CONFLUX_BINARY,
-        github_url="https://github.com/Conflux-Chain/conflux-rust.git",
-        build_cmd="cargo build --release --bin conflux",
-        compiled_relative_path=["target", "release"],
-    )
-
-def build_bsc(dir: str) -> BuildBinaryResult:
-    # Download bsc binary if absent
-    result = __download_from_github(
-        dir=dir,
-        binary_name=BSC_BINARY,
-        github_url="https://api.github.com/repos/bnb-chain/bsc/releases/79485895",
-        asset_name=__asset_name(BSC_BINARY),
-    )
-
-    # Requires to download binary successfully, since it is not ready to build
-    # binary from source code.
-    assert result != BuildBinaryResult.NotInstalled, "Cannot download binary from github [%s]" % BSC_BINARY
-
-    return result
 
 def build_zg(dir: str) -> BuildBinaryResult:
     # Download or build 0gchain binary if absent
@@ -68,27 +35,41 @@ def build_zg(dir: str) -> BuildBinaryResult:
         asset_name=__asset_name(ZG_BINARY, zip=True),
     )
 
-    if result == BuildBinaryResult.AlreadyExists or result == BuildBinaryResult.Installed:
+    if (
+        result == BuildBinaryResult.AlreadyExists
+        or result == BuildBinaryResult.Installed
+    ):
         return result
 
-    return __build_from_github(
-        dir=dir,
-        binary_name=ZG_BINARY,
-        github_url="https://github.com/0glabs/0g-chain.git",
-        build_cmd="git fetch origin pull/74/head:pr-74; git checkout pr-74; make install; cp $(go env GOPATH)/bin/0gchaind .",
-        compiled_relative_path=[],
-    )
+    raise
+
 
 def build_cli(dir: str) -> BuildBinaryResult:
-    # Build 0g-storage-client binary if absent
-    return __build_from_github(
-        dir=dir,
-        binary_name=CLIENT_BINARY,
-        github_url="https://github.com/0glabs/0g-storage-client-rust.git",
-        git_rev=CLI_GIT_REV,
-        build_cmd="cargo build",
-        compiled_relative_path=["target", "release"],
-    )
+    # Copy Rust binary from target/release into the temp folder if absent
+    if not os.path.exists(dir):
+        os.makedirs(dir, exist_ok=True)
+
+    binary_path = os.path.join(dir, CLIENT_BINARY)
+    if os.path.exists(binary_path):
+        return BuildBinaryResult.AlreadyExists
+
+    repo_root = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
+    # Rust binary is named zg-storage-client, located in target/release
+    rust_binary_name = "zg-storage-client.exe" if is_windows_platform() else "zg-storage-client"
+    root_binary_path = os.path.join(repo_root, "target", "release", rust_binary_name)
+    if not os.path.exists(root_binary_path):
+        print("Cannot find Rust binary: %s" % root_binary_path, flush=True)
+        return BuildBinaryResult.NotInstalled
+
+    # Copy and rename to 0g-storage-client
+    shutil.copyfile(root_binary_path, binary_path)
+
+    if not is_windows_platform():
+        st = os.stat(binary_path)
+        os.chmod(binary_path, st.st_mode | stat.S_IEXEC)
+
+    return BuildBinaryResult.Installed
+
 
 def __asset_name(binary_name: str, zip: bool = False) -> str:
     sys = platform.system().lower()
@@ -102,24 +83,34 @@ def __asset_name(binary_name: str, zip: bool = False) -> str:
     else:
         raise RuntimeError("Unable to recognize platform")
 
-def __build_from_github(dir: str, binary_name: str, github_url: str, build_cmd: str, compiled_relative_path: list[str], git_rev = None) -> BuildBinaryResult:
+
+def __build_from_github(
+    dir: str,
+    binary_name: str,
+    github_url: str,
+    build_cmd: str,
+    compiled_relative_path: list[str],
+    git_rev=None,
+) -> BuildBinaryResult:
     if git_rev is None:
         versioned_binary_name = binary_name
     elif binary_name.endswith(".exe"):
         versioned_binary_name = binary_name.removesuffix(".exe") + f"_{git_rev}.exe"
     else:
         versioned_binary_name = f"{binary_name}_{git_rev}"
-    
+
     binary_path = os.path.join(dir, binary_name)
     versioned_binary_path = os.path.join(dir, versioned_binary_name)
     if os.path.exists(versioned_binary_path):
         __create_sym_link(versioned_binary_name, binary_name, dir)
         return BuildBinaryResult.AlreadyExists
-    
+
     start_time = time.time()
-    
+
     # clone code from github to a temp folder
-    code_tmp_dir_name = (binary_name[:-4] if is_windows_platform() else binary_name) + "_tmp"
+    code_tmp_dir_name = (
+        binary_name[:-4] if is_windows_platform() else binary_name
+    ) + "_tmp"
     code_tmp_dir = os.path.join(dir, code_tmp_dir_name)
     if os.path.exists(code_tmp_dir):
         shutil.rmtree(code_tmp_dir)
@@ -145,14 +136,22 @@ def __build_from_github(dir: str, binary_name: str, github_url: str, build_cmd: 
 
     shutil.rmtree(code_tmp_dir, ignore_errors=True)
 
-    print("Completed to build binary " + binary_name + ", Elapsed: " + str(int(time.time() - start_time)) + " seconds", flush=True)
+    print(
+        "Completed to build binary "
+        + binary_name
+        + ", Elapsed: "
+        + str(int(time.time() - start_time))
+        + " seconds",
+        flush=True,
+    )
 
     return BuildBinaryResult.Installed
 
-def __create_sym_link(src, dst, path = None):
+
+def __create_sym_link(src, dst, path=None):
     if src == dst:
         return
-    
+
     origin_path = os.getcwd()
     if path is not None:
         os.chdir(path)
@@ -171,16 +170,19 @@ def __create_sym_link(src, dst, path = None):
 
     os.chdir(origin_path)
 
-def __download_from_github(dir: str, binary_name: str, github_url: str, asset_name: str) -> BuildBinaryResult:
+
+def __download_from_github(
+    dir: str, binary_name: str, github_url: str, asset_name: str
+) -> BuildBinaryResult:
     if not os.path.exists(dir):
         os.makedirs(dir, exist_ok=True)
 
     binary_path = os.path.join(dir, binary_name)
     if os.path.exists(binary_path):
         return BuildBinaryResult.AlreadyExists
-    
+
     print("Begin to download binary from github: %s" % binary_name, flush=True)
-    
+
     start_time = time.time()
 
     req = requests.get(github_url)
@@ -194,7 +196,7 @@ def __download_from_github(dir: str, binary_name: str, github_url: str, asset_na
     if download_url is None:
         print(f"Cannot find asset by name {asset_name}", flush=True)
         return BuildBinaryResult.NotInstalled
-    
+
     content = requests.get(download_url).content
 
     # Supports to read from zipped binary
@@ -203,17 +205,24 @@ def __download_from_github(dir: str, binary_name: str, github_url: str, asset_na
         with open(asset_path, "xb") as f:
             f.write(content)
         shutil.unpack_archive(asset_path, dir)
-        assert os.path.exists(binary_path), f"Cannot find binary after unzip, binary = {binary_name}, asset = {asset_name}"
+        assert os.path.exists(
+            binary_path
+        ), f"Cannot find binary after unzip, binary = {binary_name}, asset = {asset_name}"
     else:
         with open(binary_path, "xb") as f:
-            f.write(content)    
+            f.write(content)
 
     if not is_windows_platform():
         st = os.stat(binary_path)
         os.chmod(binary_path, st.st_mode | stat.S_IEXEC)
-    
+
     wait_until(lambda: os.access(binary_path, os.X_OK), timeout=120)
 
-    print("Completed to download binary, Elapsed: " + str(int(time.time() - start_time)) + " seconds", flush=True)
+    print(
+        "Completed to download binary, Elapsed: "
+        + str(int(time.time() - start_time))
+        + " seconds",
+        flush=True,
+    )
 
     return BuildBinaryResult.Installed
