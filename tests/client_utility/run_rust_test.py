@@ -1,5 +1,6 @@
 import tempfile
 import subprocess
+import os
 
 def run_rust_test(root_dir, test_args):
     output = tempfile.NamedTemporaryFile(dir=root_dir, delete=False, prefix="rust_test_output_")
@@ -18,5 +19,5 @@ def run_rust_test(root_dir, test_args):
         raise ex
     finally:
         output.close()
-        
+
     assert return_code == 0, "test failed, output: {}".format(output_name)
