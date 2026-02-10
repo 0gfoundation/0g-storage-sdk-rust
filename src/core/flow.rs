@@ -160,13 +160,11 @@ pub fn compute_padded_size(chunks: u64) -> (u64, u64) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::core::file::File;
-    use std::path::Path;
+    use crate::core::in_mem::DataInMemory;
 
     #[test]
     fn test_new_flow() {
-        let upload_file = Path::new("tests/tmp123456");
-        let data = File::open(upload_file).unwrap();
+        let data = DataInMemory::new(b"test data for flow".to_vec()).unwrap();
         let tag = "test_file".as_bytes().to_vec();
         let flow = Flow::new(Arc::new(data), tag);
         log::info!("Flow: {:?}", String::from_utf8(flow.tags));
@@ -174,8 +172,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_create_submission() {
-        let upload_file = Path::new("tests/tmp123456");
-        let data = File::open(upload_file).unwrap();
+        let data = DataInMemory::new(b"test data for submission".to_vec()).unwrap();
         let tag = "test_file".as_bytes().to_vec();
         let flow = Flow::new(Arc::new(data), tag);
 

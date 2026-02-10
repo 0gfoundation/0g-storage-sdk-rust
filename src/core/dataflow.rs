@@ -214,12 +214,11 @@ pub fn padded_segment_root(segment_index: u64, chunks: &[u8], file_size: u64) ->
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::core::file::File;
-    use std::path::Path;
+    use crate::core::in_mem::DataInMemory;
 
     #[tokio::test]
     async fn test_file_merkle_tree() {
-        let data = File::open(Path::new("tests/tmp123456")).unwrap();
+        let data = DataInMemory::new(b"test data for merkle tree".to_vec()).unwrap();
         let tree = merkle_tree(Arc::new(data)).await.unwrap();
         log::info!("File root: {:?}", tree.root());
     }

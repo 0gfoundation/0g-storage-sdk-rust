@@ -296,7 +296,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_rpc_get_shard_nodes() {
-        let client = IndexerClient::new("https://indexer-storage-testnet-standard.0g.ai")
+        let client = IndexerClient::new("https://indexer-storage-testnet-turbo.0g.ai")
             .await
             .unwrap();
         let result = client.get_shard_nodes().await;
