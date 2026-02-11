@@ -1,3 +1,10 @@
+[workspace]
+members = [
+    ".",
+    "tests/rust_tests/indexer_test",
+    "tests/rust_tests/batch_upload_test",
+]
+
 [package]
 name = "zg-storage-client"
 version = "0.1.0"

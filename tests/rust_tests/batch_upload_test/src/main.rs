@@ -4,14 +4,14 @@ use std::env;
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::time;
+use zg_storage_client::core::dataflow::IterableData;
 use zg_storage_client::{
-    common::options::{init_global_config, init_logging},
     cmd::upload::{BatchUploadOption, FinalityRequirement, UploadOption},
     common::blockchain::rpc::must_new_web3,
-    core::{dataflow::merkle_tree, in_mem::DataInMemory},
+    common::options::init_global_config,
+    core::in_mem::DataInMemory,
     indexer::client::IndexerClient,
 };
-use zg_storage_client::core::dataflow::IterableData;
 
 async fn run_test() -> Result<()> {
     // load arguments
@@ -45,7 +45,7 @@ async fn run_test() -> Result<()> {
         let data = DataInMemory::new(format!("indexer_test_data_{}", i).into_bytes())
             .context("Failed to initialize data")?;
         datas.push(Arc::new(data) as Arc<dyn IterableData>);
-        
+
         opts.push(UploadOption {
             tags: vec![],
             finality_required: FinalityRequirement::FileFinalized,

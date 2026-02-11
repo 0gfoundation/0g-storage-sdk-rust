@@ -15,7 +15,7 @@ class BatchUploadTest(ClientTestFramework):
 
        # Use pre-compiled binary if available, otherwise compile on-demand
        test_dir = os.path.dirname(__file__)
-       binary_path = os.path.join(test_dir, "rust_tests", "batch_upload_test", "target", "release", "batch_upload_test")
+       binary_path = os.path.join(test_dir, "..", "target", "release", "batch_upload_test")
 
        if os.path.exists(binary_path):
            test_args = [

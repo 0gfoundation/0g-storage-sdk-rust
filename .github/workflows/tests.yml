@@ -46,13 +46,8 @@ jobs:
         sudo apt-get update
         sudo apt-get install -y protobuf-compiler
 
-    - name: Build CLI
-      run: cargo build --release
-
-    - name: Build Rust test binaries
-      run: |
-        cargo build --release --manifest-path tests/rust_tests/indexer_test/Cargo.toml
-        cargo build --release --manifest-path tests/rust_tests/batch_upload_test/Cargo.toml
+    - name: Build all (CLI + test binaries)
+      run: cargo build --release --workspace
 
     - name: Set up Python 3.11.9
       uses: actions/setup-python@v4

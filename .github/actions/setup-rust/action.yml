@@ -12,7 +12,5 @@ runs:
 
     - uses: Swatinem/rust-cache@v2
       with:
-        workspaces: |
-          . -> target
-          tests/rust_tests/indexer_test -> target
-          tests/rust_tests/batch_upload_test -> target
+        shared-key: cargo-release
+        cache-on-failure: true

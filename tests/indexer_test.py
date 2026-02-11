@@ -15,7 +15,7 @@ class IndexerTest(ClientTestFramework):
 
         # Use pre-compiled binary if available, otherwise compile on-demand
         test_dir = os.path.dirname(__file__)
-        binary_path = os.path.join(test_dir, "rust_tests", "indexer_test", "target", "release", "indexer_test")
+        binary_path = os.path.join(test_dir, "..", "target", "release", "indexer_test")
 
         if os.path.exists(binary_path):
             test_args = [
