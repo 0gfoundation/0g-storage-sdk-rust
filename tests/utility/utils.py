@@ -1,0 +1,145 @@
+import base64
+import inspect
+import os
+import platform
+import rtoml
+import time
+from enum import IntEnum
+from eth_utils import keccak
+
+
+class PortMin:
+    # Must be initialized with a unique integer for each process
+    n = 11000
+
+
+MAX_NODES = 10
+
+
+class PortCategory(IntEnum):
+    ZGS_P2P = 0
+    ZG_ETH_WS = 1
+    ZG_ETH_METRICS = 2
+    ZG_AUTHRPC = 3
+    ZG_NODE_API = 4
+    ZG_P2P = 5
+    ZG_DISCOVERY = 6
+    ZG_CONSENSUS_P2P = 7
+    ZGS_RPC = 8
+    ZGS_GRPC = 9
+    ZG_ETH_HTTP = 10
+    ZG_CONSENSUS_RPC = 11
+    ZG_BLOCKCHAIN_P2P = 12
+    ZG_BLOCKCHAIN_WS = 13
+    ZG_TENDERMINT_RPC = 14
+    ZG_PPROF = 15
+    ZGS_KV_RPC = 16
+    ZGS_INDEXER_RPC = 17
+
+
+PORT_RANGE = (max(PortCategory) + 1) * MAX_NODES
+
+
+def arrange_port(category: PortCategory, node_index: int) -> int:
+    assert node_index <= MAX_NODES
+    return PortMin.n + int(category) * MAX_NODES + node_index
+
+
+def wait_until(predicate, *, attempts=float("inf"), timeout=float("inf"), lock=None):
+    if attempts == float("inf") and timeout == float("inf"):
+        timeout = 60
+    attempt = 0
+    time_end = time.time() + timeout
+
+    while attempt < attempts and time.time() < time_end:
+        if lock:
+            with lock:
+                if predicate():
+                    return
+        else:
+            if predicate():
+                return
+        attempt += 1
+        time.sleep(0.5)
+
+    # Print the cause of the timeout
+    predicate_source = inspect.getsourcelines(predicate)
+    if attempt >= attempts:
+        raise AssertionError(
+            "Predicate {} not true after {} attempts".format(predicate_source, attempts)
+        )
+    elif time.time() >= time_end:
+        raise AssertionError(
+            "Predicate {} not true after {} seconds".format(predicate_source, timeout)
+        )
+    raise RuntimeError("Unreachable")
+
+
+def is_windows_platform():
+    return platform.system().lower() == "windows"
+
+
+def initialize_config(config_path, config_parameters):
+    with open(config_path, "w") as f:
+        for k in config_parameters:
+            value = config_parameters[k]
+            if isinstance(value, str) and not (
+                value.startswith('"') or value.startswith("'")
+            ):
+                if value == "true" or value == "false":
+                    value = f"{value}"
+                else:
+                    value = f'"{value}"'
+
+            f.write(f"{k}={value}\n")
+
+
+def initialize_toml_config(config_path, config_parameters):
+    with open(config_path, "w") as f:
+        rtoml.dump(config_parameters, f)
+
+
+def create_proof_and_segment(chunk_data, data_root, index=0):
+    proof = {
+        "lemma": [data_root],
+        "path": [],
+    }
+
+    segment = {
+        "root": data_root,
+        "data": base64.b64encode(chunk_data).decode("utf-8"),
+        "index": index,
+        "proof": proof,
+    }
+
+    return proof, segment
+
+
+def assert_equal(thing1, thing2, *args):
+    if thing1 != thing2 or any(thing1 != arg for arg in args):
+        raise AssertionError(
+            "not(%s)" % " == ".join(str(arg) for arg in (thing1, thing2) + args)
+        )
+
+
+def assert_ne(thing1, thing2):
+    if thing1 == thing2:
+        raise AssertionError("not(%s)" % " != ".join([thing1, thing2]))
+
+
+def assert_greater_than(thing1, thing2):
+    if thing1 <= thing2:
+        raise AssertionError("%s <= %s" % (str(thing1), str(thing2)))
+
+
+def assert_greater_than_or_equal(thing1, thing2):
+    if thing1 < thing2:
+        raise AssertionError("%s < %s" % (str(thing1), str(thing2)))
+
+
+# 14900K has the performance point 100
+def estimate_st_performance():
+    input = b"\xcc" * (1 << 26)
+    start_time = time.perf_counter()
+    digest = keccak(input).hex()
+    return 10 / (time.perf_counter() - start_time)

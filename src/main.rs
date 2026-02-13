@@ -1,0 +1,102 @@
+use anyhow::Result;
+use clap::Parser;
+use std::collections::HashMap;
+
+use zg_storage_client::cmd::{
+    download, download_segment, generate_file, indexer, kv_read, kv_write,
+    root::{Cli, Commands},
+    upload,
+};
+use zg_storage_client::common::options::{init_global_config, init_logging, GLOBAL_OPTION};
+
+#[tokio::main]
+async fn main() -> Result<()> {
+    let cli = Cli::parse();
+    // Initialize logging based on global flags
+    init_logging(cli.log_level.as_str(), !cli.log_color_disabled)?;
+
+    // Initialize global config
+    init_global_config(
+        cli.gas_price,
+        cli.gas_limit,
+        cli.web3_log_enabled,
+        cli.rpc_retry_count,
+        cli.rpc_retry_interval,
+        cli.rpc_timeout,
+    )
+    .await?;
+
+    log::debug!(
+        "Common excution args: {:?}",
+        format!(
+            "{:?}, log_color_disabled: {:?}, log_level: {:?}",
+            GLOBAL_OPTION.lock().await,
+            cli.log_color_disabled,
+            cli.log_level
+        )
+    );
+
+    match &cli.command {
+        Some(Commands::Completion { shell }) => {
+            println!("Generating completion script for {}", shell);
+            Ok(())
+        }
+        Some(Commands::Deploy { blockchain }) => {
+            println!("Deploying ZeroGStorage contract to {}", blockchain);
+            Ok(())
+        }
+        Some(Commands::Download(download_args)) => {
+            log::info!("Downloading file from ZeroGStorage network");
+            download::run_download(download_args).await
+        }
+        Some(Commands::DownloadSegment(args)) => {
+            log::info!("Downloading segment from ZeroGStorage network");
+            download_segment::run_download_segment(args).await
+        }
+        Some(Commands::Gateway) => {
+            println!("Starting gateway service");
+            Ok(())
+        }
+        Some(Commands::Gen(generate_args)) => {
+            log::info!("Generating a temp file for test purpose");
+            generate_file::run_generate_file(generate_args).await
+        }
+        Some(Commands::Help { command }) => {
+            if let Some(cmd) = command {
+                println!("Showing help for command: {}", cmd);
+            } else {
+                println!("Showing general help");
+            }
+            Ok(())
+        }
+        Some(Commands::Indexer(indexer_args)) => {
+            log::info!("Starting indexer service");
+            indexer::run_indexer(indexer_args).await
+        }
+        Some(Commands::KvRead(kv_read_args)) => {
+            let result = kv_read::run_kv_read(kv_read_args).await?;
+            let mut string_result: HashMap<String, String> = HashMap::new();
+
+            for (key, data) in result.iter() {
+                // Try to convert data from Vec<u8> to a UTF-8 String
+                let value_as_string = match String::from_utf8(data.clone()) {
+                    Ok(string) => string,
+                    Err(_) => "[Invalid UTF-8 data]".to_string(),
+                };
+                string_result.insert(key.clone(), value_as_string);
+            }
+
+            let json_string =
+                serde_json::to_string(&string_result).expect("Failed to serialize to JSON");
+
+            println!("{}", json_string);
+            Ok(())
+        }
+        Some(Commands::KvWrite(kv_write_args)) => kv_write::run_kv_write(kv_write_args).await,
+        Some(Commands::Upload(upload_args)) => upload::run_upload(upload_args).await,
+        None => {
+            println!("No command was used");
+            Ok(())
+        }
+    }
+}

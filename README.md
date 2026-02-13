@@ -1,1 +1,1 @@
-# 0g-storage-client-rust
+# 0g-storage-sdk-rust

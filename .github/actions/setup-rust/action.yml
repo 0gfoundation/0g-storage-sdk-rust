@@ -1,0 +1,16 @@
+name: Setup Rust (cache & toolchain)
+runs:
+  using: composite
+  steps:
+    - name: Install Rust 1.93.0
+      uses: actions-rs/toolchain@v1
+      with:
+        profile: minimal
+        toolchain: 1.93.0
+        components: rustfmt, clippy
+        override: true
+
+    - uses: Swatinem/rust-cache@v2
+      with:
+        shared-key: cargo-release
+        cache-on-failure: true
