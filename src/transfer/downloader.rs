@@ -1,4 +1,5 @@
 use super::download::download_file::DownloadingFile;
+use super::encryption::{crypt_at, decrypt_segment, EncryptionHeader, ENCRYPTION_HEADER_SIZE};
 use crate::common::shard::ShardConfig;
 use crate::core::dataflow::{
     merkle_tree, num_splits, padded_segment_root, DEFAULT_CHUNK_SIZE, DEFAULT_SEGMENT_MAX_CHUNKS,
@@ -12,7 +13,7 @@ use anyhow::{Context, Result};
 use ethers::types::H256;
 use futures::stream::{self, StreamExt, TryStreamExt};
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 
 pub struct Downloader {
     pub clients: Vec<ZgsClient>,
@@ -32,6 +33,7 @@ struct DownloadSegmentConfig<'a> {
     with_proof: bool,
     root: H256,
     file_size: usize,
+    strip_padding: bool,
 }
 
 impl Downloader {
@@ -121,6 +123,57 @@ impl Downloader {
             with_proof,
             root,
             file_size: file_info.tx.size as usize,
+            strip_padding: true,
+        })
+        .await?;
+
+        Ok(segment)
+    }
+
+    /// Like `download_segment` but returns the full padded data without stripping
+    /// padding from the last segment. Useful for entry-based storage (e.g. KV flow store).
+    pub async fn download_segment_raw(
+        &self,
+        root: H256,
+        tx_seq: u64,
+        segment_index: u64,
+        with_proof: bool,
+        file_info: &FileInfo,
+    ) -> Result<Vec<u8>> {
+        let shard_configs = get_shard_configs(&self.clients).await?;
+
+        let start_segment_index =
+            file_info.tx.start_entry_index / DEFAULT_SEGMENT_MAX_CHUNKS as u64;
+        let end_segment_index = (file_info.tx.start_entry_index
+            + num_splits(file_info.tx.size as usize, DEFAULT_CHUNK_SIZE) as u64
+            - 1)
+            / DEFAULT_SEGMENT_MAX_CHUNKS as u64;
+
+        let num_segments = end_segment_index - start_segment_index + 1;
+        let num_chunks = num_splits(file_info.tx.size as usize, DEFAULT_CHUNK_SIZE) as u64;
+
+        if segment_index >= num_segments {
+            anyhow::bail!(
+                "Segment index {} out of range [0, {})",
+                segment_index,
+                num_segments
+            );
+        }
+
+        let segment = SegmentDownloader::download_segment_static(DownloadSegmentConfig {
+            clients: &self.clients,
+            shard_configs: &shard_configs,
+            task: segment_index,
+            routine: 0,
+            offset: 0,
+            start_segment_index,
+            end_segment_index,
+            num_chunks,
+            tx_seq,
+            with_proof,
+            root,
+            file_size: file_info.tx.size as usize,
+            strip_padding: false,
         })
         .await?;
 
@@ -331,6 +384,7 @@ impl<'a> SegmentDownloader<'a> {
                         with_proof,
                         root,
                         file_size,
+                        strip_padding: true,
                     })
                     .await?;
                     Ok::<(u64, Vec<u8>), anyhow::Error>((task, segment))
@@ -407,7 +461,9 @@ impl<'a> SegmentDownloader<'a> {
                 }
 
                 // Remove paddings for the last chunk
-                if config.start_segment_index + segment_index == config.end_segment_index {
+                if config.strip_padding
+                    && config.start_segment_index + segment_index == config.end_segment_index
+                {
                     let last_chunk_size = config.file_size % DEFAULT_CHUNK_SIZE;
                     if last_chunk_size > 0 {
                         let paddings = DEFAULT_CHUNK_SIZE - last_chunk_size;
@@ -484,6 +540,8 @@ pub struct DownloadContext {
     downloader: Downloader,
     file_info: FileInfo,
     file_root: H256,
+    encryption_key: Option<[u8; 32]>,
+    encryption_header: Mutex<Option<EncryptionHeader>>,
 }
 
 impl DownloadContext {
@@ -498,11 +556,23 @@ impl DownloadContext {
             downloader,
             file_info,
             file_root,
+            encryption_key: None,
+            encryption_header: Mutex::new(None),
         })
     }
 
+    /// Enable decryption with the given AES-256 key.
+    /// Segment 0 must be downloaded first to extract the encryption header.
+    pub fn with_encryption(mut self, key: [u8; 32]) -> Self {
+        self.encryption_key = Some(key);
+        self
+    }
+
+    /// Download a segment, stripping padding from the last segment.
+    /// If encryption is enabled, the data is decrypted and the header is stripped from segment 0.
     pub async fn download_segment(&self, segment_index: u64, with_proof: bool) -> Result<Vec<u8>> {
-        self.downloader
+        let raw = self
+            .downloader
             .download_segment(
                 self.file_root,
                 self.file_info.tx.seq,
@@ -510,7 +580,84 @@ impl DownloadContext {
                 with_proof,
                 &self.file_info,
             )
-            .await
+            .await?;
+
+        if let Some(key) = &self.encryption_key {
+            let header = self.get_or_parse_header(segment_index, &raw)?;
+            Ok(decrypt_segment(
+                key,
+                segment_index,
+                DEFAULT_SEGMENT_SIZE as u64,
+                &raw,
+                &header,
+            ))
+        } else {
+            Ok(raw)
+        }
+    }
+
+    /// Download a segment without stripping padding. If encryption is enabled,
+    /// data is decrypted but the encryption header is preserved in segment 0
+    /// (i.e. segment 0 returns `[header][decrypted_plaintext]`).
+    /// This is useful for entry-based storage where byte layout must match on-chain tx size.
+    pub async fn download_segment_padded(
+        &self,
+        segment_index: u64,
+        with_proof: bool,
+    ) -> Result<Vec<u8>> {
+        let raw = self
+            .downloader
+            .download_segment_raw(
+                self.file_root,
+                self.file_info.tx.seq,
+                segment_index,
+                with_proof,
+                &self.file_info,
+            )
+            .await?;
+
+        if let Some(key) = &self.encryption_key {
+            let header = self.get_or_parse_header(segment_index, &raw)?;
+            if segment_index == 0 {
+                // Decrypt data after header, but preserve the header bytes
+                let mut result = raw;
+                crypt_at(key, &header.nonce, 0, &mut result[ENCRYPTION_HEADER_SIZE..]);
+                Ok(result)
+            } else {
+                Ok(decrypt_segment(
+                    key,
+                    segment_index,
+                    DEFAULT_SEGMENT_SIZE as u64,
+                    &raw,
+                    &header,
+                ))
+            }
+        } else {
+            Ok(raw)
+        }
+    }
+
+    /// Get the cached encryption header, or parse it from segment 0 data.
+    fn get_or_parse_header(
+        &self,
+        segment_index: u64,
+        segment_data: &[u8],
+    ) -> Result<EncryptionHeader> {
+        let mut guard = self.encryption_header.lock().unwrap();
+        if let Some(header) = guard.as_ref() {
+            return Ok(header.clone());
+        }
+        if segment_index != 0 {
+            anyhow::bail!("Encryption header not yet available; download segment 0 first");
+        }
+        let header = EncryptionHeader::parse(segment_data)?;
+        *guard = Some(header.clone());
+        Ok(header)
+    }
+
+    /// Returns the parsed encryption header, if segment 0 has been downloaded.
+    pub fn encryption_header(&self) -> Option<EncryptionHeader> {
+        self.encryption_header.lock().unwrap().clone()
     }
 
     pub fn file_root(&self) -> H256 {
