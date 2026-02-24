@@ -44,15 +44,29 @@ impl RpcClient {
 
         let mut retry_count = 0;
         loop {
-            match self
+            // Deserialize as raw Value first to avoid jsonrpsee swallowing
+            // the response body on type-mismatch parse errors.
+            let raw_result: Result<Value, _> = self
                 .client
                 .request(method, Some(ParamsSer::Array(params.clone())))
-                .await
-            {
-                Ok(result) => {
-                    log::debug!("RPC {}: Success", method);
-                    break Ok(result);
-                }
+                .await;
+            match raw_result {
+                Ok(raw) => match serde_json::from_value::<R>(raw.clone()) {
+                    Ok(result) => {
+                        log::debug!("RPC {}: Success", method);
+                        break Ok(result);
+                    }
+                    Err(e) => {
+                        log::error!(
+                            "RPC {} result deserialization failed: {} (raw: {}, url: {})",
+                            method,
+                            e,
+                            raw,
+                            self.url
+                        );
+                        break Err(jsonrpsee::core::Error::ParseError(e));
+                    }
+                },
                 Err(e) => {
                     retry_count += 1;
                     log::error!(
@@ -78,11 +92,24 @@ impl RpcClient {
     {
         let mut retry_count = 0;
         loop {
-            match self.client.request(method, rpc_params![]).await {
-                Ok(result) => {
-                    log::debug!("RPC {}: Success", method);
-                    break Ok(result);
-                }
+            let raw_result: Result<Value, _> = self.client.request(method, rpc_params![]).await;
+            match raw_result {
+                Ok(raw) => match serde_json::from_value::<R>(raw.clone()) {
+                    Ok(result) => {
+                        log::debug!("RPC {}: Success", method);
+                        break Ok(result);
+                    }
+                    Err(e) => {
+                        log::error!(
+                            "RPC {} result deserialization failed: {} (raw: {}, url: {})",
+                            method,
+                            e,
+                            raw,
+                            self.url
+                        );
+                        break Err(jsonrpsee::core::Error::ParseError(e));
+                    }
+                },
                 Err(e) => {
                     retry_count += 1;
                     log::error!(
