@@ -44,8 +44,8 @@ impl RpcClient {
 
         let mut retry_count = 0;
         loop {
-            // Deserialize as raw Value first to avoid jsonrpsee swallowing
-            // the response body on type-mismatch parse errors.
+            // Deserialize as raw Value first so we can log the actual response
+            // on type-mismatch errors (jsonrpsee swallows the body otherwise).
             let raw_result: Result<Value, _> = self
                 .client
                 .request(method, Some(ParamsSer::Array(params.clone())))
