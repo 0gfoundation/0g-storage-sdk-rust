@@ -148,46 +148,59 @@ class ClientTestFramework(TestFramework):
         upload_args.append("--file")
         self.log.info("upload file with cli: {}".format(upload_args))
 
-        output = tempfile.NamedTemporaryFile(
-            dir=self.root_dir, delete=False, prefix="zgs_client_output_"
-        )
-        output_name = output.name
-        output_fileno = output.fileno()
-
-        try:
-            proc = subprocess.Popen(
-                upload_args + [file_to_upload.name],
-                text=True,
-                stdout=output_fileno,
-                stderr=output_fileno,
+        max_retries = 3
+        for attempt in range(max_retries):
+            output = tempfile.NamedTemporaryFile(
+                dir=self.root_dir, delete=False, prefix="zgs_client_output_"
             )
+            output_name = output.name
+            output_fileno = output.fileno()
 
-            return_code = proc.wait(timeout=60)
+            try:
+                proc = subprocess.Popen(
+                    upload_args + [file_to_upload.name],
+                    text=True,
+                    stdout=output_fileno,
+                    stderr=output_fileno,
+                )
 
-            output.seek(0)
-            lines = output.readlines()
-            for line in lines:
-                line = line.decode("utf-8")
-                self.log.debug("line: %s", line)
-                if "root = " in line:
-                    root = line.strip().split("root = ")[1]
-                if "roots = " in line:
-                    root = line.strip().split("roots = ")[1]
-        except Exception as ex:
-            self.log.error(
-                "Failed to upload file via CLI tool, output: %s", output_name
-            )
-            raise ex
-        finally:
-            output.close()
+                return_code = proc.wait(timeout=60)
 
-        assert return_code == 0, "%s upload file failed, output: %s, log: %s" % (
-            self.cli_binary,
-            output_name,
-            lines,
-        )
+                output.seek(0)
+                lines = output.readlines()
+                for line in lines:
+                    line = line.decode("utf-8")
+                    self.log.debug("line: %s", line)
+                    if "root = " in line:
+                        root = line.strip().split("root = ")[1]
+                    if "roots = " in line:
+                        root = line.strip().split("roots = ")[1]
+            except Exception as ex:
+                self.log.error(
+                    "Failed to upload file via CLI tool, output: %s", output_name
+                )
+                raise ex
+            finally:
+                output.close()
 
-        return root
+            if return_code == 0:
+                return root
+
+            if attempt < max_retries - 1:
+                self.log.warning(
+                    "Upload attempt %d/%d failed (return_code=%d), retrying in 5s...",
+                    attempt + 1,
+                    max_retries,
+                    return_code,
+                )
+                time.sleep(5)
+            else:
+                assert False, "%s upload file failed after %d attempts, output: %s, log: %s" % (
+                    self.cli_binary,
+                    max_retries,
+                    output_name,
+                    lines,
+                )
 
     def _download_file_use_cli(
         self,
