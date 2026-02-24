@@ -58,6 +58,11 @@ impl FlowContract {
         }
         if let Some(gas_limit) = traction_opts.gas {
             tx_builder = tx_builder.gas(gas_limit);
+        } else {
+            let estimate = tx_builder.estimate_gas().await?;
+            let buffered = estimate * 120 / 100;
+            log::debug!("Gas estimate: {}, with 20% buffer: {}", estimate, buffered);
+            tx_builder = tx_builder.gas(buffered);
         }
         tx_builder = tx_builder.value(fee);
         let pending_tx = tx_builder.send().await?;
@@ -79,6 +84,11 @@ impl FlowContract {
         }
         if let Some(gas_limit) = traction_opts.gas {
             tx_builder = tx_builder.gas(gas_limit);
+        } else {
+            let estimate = tx_builder.estimate_gas().await?;
+            let buffered = estimate * 120 / 100;
+            log::debug!("Gas estimate: {}, with 20% buffer: {}", estimate, buffered);
+            tx_builder = tx_builder.gas(buffered);
         }
         tx_builder = tx_builder.value(total_fee);
         let pending_tx = tx_builder.send().await?;

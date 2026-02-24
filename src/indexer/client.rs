@@ -270,16 +270,17 @@ impl IndexerClient {
 
         let mut clients = Vec::new();
         for location in selected {
-            let client = match ZgsClient::new(&location.url).await {
-                Ok(client) => client,
-                Err(_) => {
-                    log::debug!(
-                        "Failed to initialize client of node {}, dropped.",
-                        location.url
-                    );
-                    continue;
-                }
-            };
+            let client =
+                match ZgsClient::new_with_shard_config(&location.url, location.config).await {
+                    Ok(client) => client,
+                    Err(_) => {
+                        log::debug!(
+                            "Failed to initialize client of node {}, dropped.",
+                            location.url
+                        );
+                        continue;
+                    }
+                };
 
             clients.push(client);
         }
@@ -332,7 +333,9 @@ impl IndexerClient {
 
             let mut clients = Vec::new();
             for location in selected {
-                if let Ok(client) = ZgsClient::new(&location.url).await {
+                if let Ok(client) =
+                    ZgsClient::new_with_shard_config(&location.url, location.config).await
+                {
                     clients.push(client);
                 }
             }
