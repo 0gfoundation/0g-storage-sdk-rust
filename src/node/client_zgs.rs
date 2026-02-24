@@ -14,6 +14,7 @@ use crate::common::shard::ShardConfig;
 #[derive(Debug, Clone)]
 pub struct ZgsClient {
     pub client: RpcClient,
+    shard_config: ShardConfig,
 }
 
 impl Deref for ZgsClient {
@@ -25,11 +26,35 @@ impl Deref for ZgsClient {
 }
 
 impl ZgsClient {
+    /// Create a new ZgsClient, eagerly fetching the shard config from the node.
     pub async fn new(url: &str) -> Result<Self> {
         let url = validate_url(url)?;
         let rpc_config = GLOBAL_OPTION.lock().await.rpc_config.clone();
         let client = RpcClient::new(&url, &rpc_config)?;
-        Ok(Self { client })
+        let shard_config: ShardConfig = client
+            .request_no_params("zgs_getShardConfig")
+            .await
+            .map_err(|e| anyhow::anyhow!("Failed to get shard config from {}: {}", url, e))?;
+        Ok(Self {
+            client,
+            shard_config,
+        })
+    }
+
+    /// Create a new ZgsClient with a pre-fetched shard config (e.g. from indexer).
+    pub async fn new_with_shard_config(url: &str, shard_config: ShardConfig) -> Result<Self> {
+        let url = validate_url(url)?;
+        let rpc_config = GLOBAL_OPTION.lock().await.rpc_config.clone();
+        let client = RpcClient::new(&url, &rpc_config)?;
+        Ok(Self {
+            client,
+            shard_config,
+        })
+    }
+
+    /// Returns the cached shard config for this node.
+    pub fn shard_config(&self) -> &ShardConfig {
+        &self.shard_config
     }
 
     pub async fn get_status(&self) -> ZgRpcResult<Status> {

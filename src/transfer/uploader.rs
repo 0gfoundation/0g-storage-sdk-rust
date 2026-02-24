@@ -22,7 +22,7 @@ use ethers::{
     providers::{Http, Provider},
     signers::LocalWallet,
 };
-use futures::future::{join_all, try_join_all};
+use futures::future::try_join_all;
 use std::sync::Arc;
 use std::time::Instant;
 use tokio::time::Duration;
@@ -474,7 +474,7 @@ impl Uploader {
         expected_replica: u32,
         task_size: u32,
     ) -> Result<SegmentUploader> {
-        let shard_configs = get_shard_configs(&self.clients).await?;
+        let shard_configs = get_shard_configs(&self.clients);
         log::debug!("Storage node shard configs: {:?}", shard_configs);
 
         if !check_replica(&shard_configs, expected_replica) {
@@ -588,25 +588,8 @@ impl Uploader {
     }
 }
 
-pub async fn get_shard_configs(clients: &[ZgsClient]) -> Result<Vec<ShardConfig>> {
-    let shard_config_futures = clients.iter().map(|client| async {
-        let shard_config = client
-            .get_shard_config()
-            .await
-            .context("Failed to get shard config")?;
-
-        if !shard_config.is_valid() {
-            anyhow::bail!("Invalid shard config: NumShard is zero");
-        }
-
-        Ok(shard_config)
-    });
-
-    // 并行执行所有 future
-    let results = join_all(shard_config_futures).await;
-
-    // 处理结果
-    results.into_iter().collect()
+pub fn get_shard_configs(clients: &[ZgsClient]) -> Vec<ShardConfig> {
+    clients.iter().map(|c| c.shard_config().clone()).collect()
 }
 
 impl SegmentUploader {

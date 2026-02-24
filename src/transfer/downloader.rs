@@ -89,7 +89,7 @@ impl Downloader {
         with_proof: bool,
         file_info: &FileInfo,
     ) -> Result<Vec<u8>> {
-        let shard_configs = get_shard_configs(&self.clients).await?;
+        let shard_configs = get_shard_configs(&self.clients);
 
         let start_segment_index =
             file_info.tx.start_entry_index / DEFAULT_SEGMENT_MAX_CHUNKS as u64;
@@ -140,7 +140,7 @@ impl Downloader {
         with_proof: bool,
         file_info: &FileInfo,
     ) -> Result<Vec<u8>> {
-        let shard_configs = get_shard_configs(&self.clients).await?;
+        let shard_configs = get_shard_configs(&self.clients);
 
         let start_segment_index =
             file_info.tx.start_entry_index / DEFAULT_SEGMENT_MAX_CHUNKS as u64;
@@ -247,7 +247,7 @@ impl Downloader {
             self.clients.len()
         );
 
-        let shard_configs = get_shard_configs(&self.clients).await?;
+        let shard_configs = get_shard_configs(&self.clients);
 
         let mut sd = SegmentDownloader::new(
             &self.clients,
@@ -669,13 +669,6 @@ impl DownloadContext {
     }
 }
 
-pub async fn get_shard_configs(clients: &Vec<ZgsClient>) -> Result<Vec<ShardConfig>> {
-    let mut shard_configs = Vec::new();
-
-    for client in clients {
-        let shard_config = client.get_shard_config().await?;
-        shard_configs.push(shard_config);
-    }
-
-    Ok(shard_configs)
+pub fn get_shard_configs(clients: &[ZgsClient]) -> Vec<ShardConfig> {
+    clients.iter().map(|c| c.shard_config().clone()).collect()
 }
