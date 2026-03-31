@@ -62,6 +62,68 @@ impl IndexerClient {
         Ok(Self { client, option })
     }
 
+    /// Upload a (potentially large) file via the indexer, splitting it into
+    /// power-of-2-aligned fragments when it exceeds `fragment_size` bytes.
+    ///
+    /// Returns one Merkle root per fragment in upload order.
+    pub async fn splitable_upload(
+        &self,
+        w3_client: Web3Client,
+        data: Arc<dyn IterableData>,
+        fragment_size: i64,
+        opt: &UploadOption,
+        flow_address: Option<ethers::types::Address>,
+        market_address: Option<ethers::types::Address>,
+    ) -> Result<Vec<H256>> {
+        use crate::core::fragment::{next_pow2, split_data};
+        use ethers::types::U256;
+
+        let frag_size = (next_pow2(fragment_size as u64) as i64)
+            .max(crate::core::dataflow::DEFAULT_CHUNK_SIZE as i64);
+
+        let fragments = if data.size() <= frag_size {
+            vec![data]
+        } else {
+            let frags = split_data(data, frag_size);
+            log::info!(
+                "Split file into {} fragments of up to {} bytes each",
+                frags.len(),
+                frag_size
+            );
+            frags
+        };
+
+        const DEFAULT_BATCH_SIZE: usize = 10;
+        let mut all_roots: Vec<H256> = Vec::new();
+
+        for (batch_idx, batch) in fragments.chunks(DEFAULT_BATCH_SIZE).enumerate() {
+            log::info!(
+                "Batch submitting fragments {} to {}",
+                batch_idx * DEFAULT_BATCH_SIZE,
+                batch_idx * DEFAULT_BATCH_SIZE + batch.len()
+            );
+            let batch_opt = BatchUploadOption {
+                data_options: vec![opt.clone(); batch.len()],
+                task_size: opt.task_size,
+                fee: U256::zero(),
+                nonce: U256::zero(),
+            };
+            let (_, roots) = self
+                .batch_upload(
+                    w3_client.clone(),
+                    batch.to_vec(),
+                    false,
+                    &batch_opt,
+                    flow_address,
+                    market_address,
+                )
+                .await?;
+            all_roots.extend(roots);
+        }
+
+        Ok(all_roots)
+    }
+
     pub async fn batch_upload(
         &self,
         w3_client: Web3Client,

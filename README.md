@@ -174,7 +174,14 @@ let clients = must_new_zgs_clients(&["http://node:5678".to_string()]).await;
 let uploader = Uploader::new_with_addresses(web3_client, clients, None, None).await?;
 let file = Arc::new(File::open(&path)?);
 let opt = UploadOption::default();
-uploader.upload(file, &opt).await?;
+
+// Single file
+uploader.upload(file.clone(), &opt).await?;
+
+// Large file — split into power-of-2-aligned fragments (e.g. 4 GiB each)
+// Returns one Merkle root per fragment; pass them to download_fragments to reassemble.
+let fragment_size = 4 * 1024 * 1024 * 1024i64; // 4 GiB
+let roots = uploader.splitable_upload(file, fragment_size, &opt).await?;
 ```
 
 ### Downloading a file
@@ -194,17 +201,26 @@ downloader.download_fragments(roots, &output_path, with_proof, None).await?;
 downloader.download_fragments(roots, &output_path, with_proof, Some(&key)).await?;
 ```
 
-### Downloading via indexer
+### Uploading / downloading via indexer
 
 ```rust
 use zg_storage_client::indexer::client::IndexerClient;
 
 let client = IndexerClient::new("http://indexer:12345").await?;
 
-// Single file
+// Upload single file
+client.upload(web3_client.clone(), file.clone(), &opt, None, None).await?;
+
+// Upload large file as fragments
+let fragment_size = 4 * 1024 * 1024 * 1024i64;
+let roots = client
+    .splitable_upload(web3_client, file, fragment_size, &opt, None, None)
+    .await?;
+
+// Download single file
 client.download(root, &output_path, with_proof).await?;
 
-// Fragmented large file
+// Download fragmented large file
 client.download_fragments(roots, &output_path, with_proof, None).await?;
 ```
 
@@ -284,7 +300,7 @@ Key test files:
 |------|---------------|
 | `cli_file_upload_download_test.py` | Single-file upload/download |
 | `cli_file_encrypted_upload_download_test.py` | Encrypted single-file upload/download across many sizes |
-| `splitable_upload_test.py` | Plain fragmented upload/download (50 MB, 4 MB fragments) |
+| `splitable_upload_test.py` | Plain fragmented upload/download (50 MB, 4 MB fragments) — run manually |
 | `cli_encrypted_splitable_upload_download_test.py` | Encrypted fragmented upload/download with boundary-condition fragment counts |
 | `cli_download_segment_test.py` | Segment-level download |
 | `indexer_test.py` | Indexer node selection and upload/download via indexer |

@@ -281,6 +281,59 @@ impl Uploader {
         Ok((tx_hash, data_roots))
     }
 
+    /// Upload a (potentially large) file, splitting it into power-of-2-aligned
+    /// fragments when it exceeds `fragment_size` bytes.
+    ///
+    /// Each fragment is submitted to the blockchain and uploaded to the storage
+    /// nodes as an independent file.  Returns one Merkle root per fragment in
+    /// upload order — pass this list to `Downloader::download_fragments` to
+    /// reassemble the original file.
+    pub async fn splitable_upload(
+        &self,
+        data: Arc<dyn IterableData>,
+        fragment_size: i64,
+        opt: &UploadOption,
+    ) -> Result<Vec<H256>> {
+        use crate::core::fragment::{next_pow2, split_data};
+
+        // Align to next power of 2, minimum one chunk (256 bytes)
+        let frag_size = (next_pow2(fragment_size as u64) as i64)
+            .max(crate::core::dataflow::DEFAULT_CHUNK_SIZE as i64);
+
+        let fragments = if data.size() <= frag_size {
+            vec![data]
+        } else {
+            let frags = split_data(data, frag_size);
+            log::info!(
+                "Split file into {} fragments of up to {} bytes each",
+                frags.len(),
+                frag_size
+            );
+            frags
+        };
+
+        const DEFAULT_BATCH_SIZE: usize = 10;
+        let mut all_roots: Vec<H256> = Vec::new();
+
+        for (batch_idx, batch) in fragments.chunks(DEFAULT_BATCH_SIZE).enumerate() {
+            log::info!(
+                "Batch submitting fragments {} to {}",
+                batch_idx * DEFAULT_BATCH_SIZE,
+                batch_idx * DEFAULT_BATCH_SIZE + batch.len()
+            );
+            let batch_opt = BatchUploadOption {
+                data_options: vec![opt.clone(); batch.len()],
+                task_size: opt.task_size,
+                fee: opt.fee,
+                nonce: U256::zero(),
+            };
+            let (_, roots) = self.batch_upload(batch.to_vec(), false, &batch_opt).await?;
+            all_roots.extend(roots);
+        }
+
+        Ok(all_roots)
+    }
+
     pub async fn upload(&self, data: Arc<dyn IterableData>, opt: &UploadOption) -> Result<H256> {
         let start_time = Instant::now();
 
