@@ -17,7 +17,11 @@ pub struct IndexerArgs {
     #[arg(long, default_value = "12345", help = "Indexer service endpoint")]
     pub endpoint: String,
 
-    #[arg(long, value_delimiter = ',', help = "Trusted storage node URLs separated by comma")]
+    #[arg(
+        long,
+        value_delimiter = ',',
+        help = "Trusted storage node URLs separated by comma"
+    )]
     pub trusted: Vec<String>,
 
     #[arg(long, help = "Storage node to discover peers in P2P network")]
