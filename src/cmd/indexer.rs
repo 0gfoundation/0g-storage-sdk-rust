@@ -17,7 +17,7 @@ pub struct IndexerArgs {
     #[arg(long, default_value = "12345", help = "Indexer service endpoint")]
     pub endpoint: String,
 
-    #[arg(long, help = "Trusted storage node URLs separated by comma")]
+    #[arg(long, value_delimiter = ',', help = "Trusted storage node URLs separated by comma")]
     pub trusted: Vec<String>,
 
     #[arg(long, help = "Storage node to discover peers in P2P network")]
@@ -117,23 +117,16 @@ pub async fn run_indexer(args: &IndexerArgs) -> Result<()> {
         cache_size: args.file_location_cache_size,
     };
 
-    DefaultIPLocationManager::init(location_config)
-        .await
-        .context("Failed to initialize IP Location Manager")?;
-    DefaultNodeManger::init(node_config)
-        .await
-        .context("Failed to initialize Node Manager")?;
-    DefaultFileLocationCache::init(location_cache_config)
-        .await
-        .context("Failed to initialize File Location Cache")?;
-
     log::info!(
         "Starting indexer service ... trusted: {}, discover: {}",
         args.trusted.len(),
         args.node.is_some()
     );
 
-    // Start server
+    DefaultIPLocationManager::init(location_config).await?;
+    DefaultNodeManger::init(node_config).await?;
+    DefaultFileLocationCache::init(location_cache_config).await?;
+
     log::info!("Starting server at 127.0.0.1:{}", args.endpoint);
     let server = HttpServerBuilder::default()
         .build(format!("127.0.0.1:{}", args.endpoint))
@@ -143,10 +136,8 @@ pub async fn run_indexer(args: &IndexerArgs) -> Result<()> {
     let server_addr = server.local_addr()?;
     log::info!("Indexer service running at {}", server_addr);
 
-    // Start the server and wait indefinitely
     let server_handle = server.start(IndexerServerImpl.into_rpc())?;
 
-    // Use tokio::signal to handle shutdown gracefully
     match tokio::signal::ctrl_c().await {
         Ok(()) => {
             log::info!("Received shutdown signal, stopping server...");
@@ -158,9 +149,6 @@ pub async fn run_indexer(args: &IndexerArgs) -> Result<()> {
             return Err(err.into());
         }
     }
-
-    // Keep the main thread alive
-    std::future::pending::<()>().await;
 
     Ok(())
 }
