@@ -36,12 +36,12 @@ impl DataFragment {
 
 impl IterableData for DataFragment {
     fn num_chunks(&self) -> u64 {
-        (self.size as u64 + DEFAULT_CHUNK_SIZE as u64 - 1) / DEFAULT_CHUNK_SIZE as u64
+        (self.size as u64).div_ceil(DEFAULT_CHUNK_SIZE as u64)
     }
 
     fn num_segments(&self) -> u64 {
         use super::dataflow::DEFAULT_SEGMENT_SIZE;
-        (self.size as u64 + DEFAULT_SEGMENT_SIZE as u64 - 1) / DEFAULT_SEGMENT_SIZE as u64
+        (self.size as u64).div_ceil(DEFAULT_SEGMENT_SIZE as u64)
     }
 
     fn size(&self) -> i64 {
@@ -139,9 +139,10 @@ impl<'a> CustomIterator for DataFragmentIterator<'a> {
         let real_remaining = (self.fragment_size - self.local_offset) as usize;
         let real_to_read = real_remaining.min(expected_buf_size);
 
-        let n = self
-            .inner
-            .read(&mut self.buf[..real_to_read], self.fragment_start + self.local_offset)?;
+        let n = self.inner.read(
+            &mut self.buf[..real_to_read],
+            self.fragment_start + self.local_offset,
+        )?;
         self.buf_size = n;
         self.local_offset += n as i64;
 
@@ -161,10 +162,7 @@ impl<'a> CustomIterator for DataFragmentIterator<'a> {
 
 /// Split `data` into fragments of at most `fragment_size` bytes each.
 /// The last fragment may be smaller.
-pub fn split_data(
-    data: Arc<dyn IterableData>,
-    fragment_size: i64,
-) -> Vec<Arc<dyn IterableData>> {
+pub fn split_data(data: Arc<dyn IterableData>, fragment_size: i64) -> Vec<Arc<dyn IterableData>> {
     let total = data.size();
     let mut fragments: Vec<Arc<dyn IterableData>> = Vec::new();
     let mut offset = 0i64;
