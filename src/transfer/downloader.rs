@@ -1,5 +1,7 @@
 use super::download::download_file::DownloadingFile;
-use super::encryption::{crypt_at, decrypt_segment, EncryptionHeader, ENCRYPTION_HEADER_SIZE};
+use super::encryption::{
+    crypt_at, decrypt_fragment_data, decrypt_segment, EncryptionHeader, ENCRYPTION_HEADER_SIZE,
+};
 use crate::common::shard::ShardConfig;
 use crate::core::dataflow::{
     merkle_tree, num_splits, padded_segment_root, DEFAULT_CHUNK_SIZE, DEFAULT_SEGMENT_MAX_CHUNKS,
@@ -12,6 +14,7 @@ use crate::node::types::FileInfo;
 use anyhow::{Context, Result};
 use ethers::types::H256;
 use futures::stream::{self, StreamExt, TryStreamExt};
+use std::io::Write as IoWrite;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
@@ -67,6 +70,77 @@ impl Downloader {
             .await
             .context("Failed to validate downloaded file")?;
 
+        Ok(())
+    }
+
+    /// Download a list of fragment files (each identified by its root hash) and
+    /// concatenate them into a single output file.
+    ///
+    /// This mirrors the Go SDK's `DownloadFragments` behaviour: each root hash
+    /// corresponds to one fragment of a large file that was split before upload.
+    /// The fragments are downloaded sequentially and appended in order.
+    ///
+    /// When `encryption_key` is provided the fragments are treated as parts of a
+    /// continuous AES-256-CTR encrypted stream: the 17-byte header is extracted
+    /// from fragment 0 and the CTR byte-offset is tracked across all fragments so
+    /// the plaintext is reconstructed correctly.
+    pub async fn download_fragments(
+        &self,
+        roots: Vec<H256>,
+        file: &PathBuf,
+        with_proof: bool,
+        encryption_key: Option<&[u8; 32]>,
+    ) -> Result<()> {
+        if roots.is_empty() {
+            anyhow::bail!("No root hashes provided");
+        }
+
+        let mut out = std::fs::File::create(file)
+            .with_context(|| format!("Failed to create output file {:?}", file))?;
+
+        let mut header: Option<EncryptionHeader> = None;
+        let mut data_offset: u64 = 0;
+
+        for (i, root) in roots.iter().enumerate() {
+            // Use a temp path next to the target file
+            let temp_path = file.with_extension(format!("part.{}", i));
+
+            self.download(*root, &temp_path, with_proof)
+                .await
+                .with_context(|| format!("Failed to download fragment {}", i))?;
+
+            let fragment_data = std::fs::read(&temp_path)
+                .with_context(|| format!("Failed to read fragment {}", i))?;
+            let _ = std::fs::remove_file(&temp_path);
+
+            if let Some(key) = encryption_key {
+                // Parse header from the very first fragment
+                if i == 0 {
+                    header = Some(
+                        EncryptionHeader::parse(&fragment_data)
+                            .context("Failed to parse encryption header from fragment 0")?,
+                    );
+                }
+                let hdr = header.as_ref().unwrap();
+                let (plaintext, new_offset) =
+                    decrypt_fragment_data(key, hdr, &fragment_data, i == 0, data_offset)
+                        .with_context(|| format!("Failed to decrypt fragment {}", i))?;
+                data_offset = new_offset;
+                out.write_all(&plaintext)
+                    .with_context(|| format!("Failed to write fragment {}", i))?;
+            } else {
+                out.write_all(&fragment_data)
+                    .with_context(|| format!("Failed to write fragment {}", i))?;
+            }
+
+            log::info!("Downloaded and appended fragment {}/{}", i + 1, roots.len());
+        }
+
+        log::info!(
+            "Completed assembling {} fragments into {:?}",
+            roots.len(),
+            file
+        );
         Ok(())
     }
 

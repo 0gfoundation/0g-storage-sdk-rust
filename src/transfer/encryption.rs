@@ -63,6 +63,41 @@ pub fn crypt_at(key: &[u8; 32], nonce: &[u8; 16], offset: u64, data: &mut [u8]) 
     cipher.apply_keystream(data);
 }
 
+/// Decrypt a single fragment from a multi-fragment encrypted file.
+///
+/// For fragment 0 (`is_first = true`): strips the 17-byte header and decrypts
+/// the remaining bytes starting at CTR offset 0.
+/// For subsequent fragments: decrypts all bytes using `data_offset` into the
+/// plaintext stream (the cumulative count of plaintext bytes written so far).
+///
+/// Returns `(plaintext, new_data_offset)` where `new_data_offset` should be
+/// passed as `data_offset` for the next fragment.
+pub fn decrypt_fragment_data(
+    key: &[u8; 32],
+    header: &EncryptionHeader,
+    fragment_data: &[u8],
+    is_first: bool,
+    data_offset: u64,
+) -> Result<(Vec<u8>, u64)> {
+    if is_first {
+        if fragment_data.len() < ENCRYPTION_HEADER_SIZE {
+            anyhow::bail!(
+                "First fragment too short for encryption header: {} bytes",
+                fragment_data.len()
+            );
+        }
+        let mut plaintext = fragment_data[ENCRYPTION_HEADER_SIZE..].to_vec();
+        crypt_at(key, &header.nonce, 0, &mut plaintext);
+        let new_offset = plaintext.len() as u64;
+        Ok((plaintext, new_offset))
+    } else {
+        let mut plaintext = fragment_data.to_vec();
+        crypt_at(key, &header.nonce, data_offset, &mut plaintext);
+        let new_offset = data_offset + plaintext.len() as u64;
+        Ok((plaintext, new_offset))
+    }
+}
+
 /// Decrypt a full downloaded file in-place: strip header, decrypt remaining bytes.
 /// Returns the decrypted data (without header).
 pub fn decrypt_file(key: &[u8; 32], encrypted: &[u8]) -> Result<Vec<u8>> {
@@ -233,6 +268,84 @@ mod tests {
         assert_eq!(&result[..ENCRYPTION_HEADER_SIZE], &header.to_bytes());
         assert_eq!(&result[ENCRYPTION_HEADER_SIZE..], &plaintext);
         assert_eq!(result.len(), segment_size as usize);
+    }
+
+    #[test]
+    fn test_decrypt_fragment_data_first() {
+        let key = [0x42u8; 32];
+        let header = EncryptionHeader::new();
+        let plaintext = b"hello fragment zero data";
+
+        // Build fragment 0: header + encrypted plaintext
+        let mut encrypted = plaintext.to_vec();
+        crypt_at(&key, &header.nonce, 0, &mut encrypted);
+        let mut fragment0 = header.to_bytes().to_vec();
+        fragment0.extend_from_slice(&encrypted);
+
+        let (got, new_offset) = decrypt_fragment_data(&key, &header, &fragment0, true, 0).unwrap();
+        assert_eq!(got, plaintext);
+        assert_eq!(new_offset, plaintext.len() as u64);
+    }
+
+    #[test]
+    fn test_decrypt_fragment_data_subsequent() {
+        let key = [0x42u8; 32];
+        let header = EncryptionHeader::new();
+
+        let frag0_plain = b"first fragment data.";
+        let frag1_plain = b"second fragment data.";
+        let data_offset = frag0_plain.len() as u64; // offset after first fragment
+
+        let mut encrypted = frag1_plain.to_vec();
+        crypt_at(&key, &header.nonce, data_offset, &mut encrypted);
+
+        let (got, new_offset) =
+            decrypt_fragment_data(&key, &header, &encrypted, false, data_offset).unwrap();
+        assert_eq!(got, frag1_plain);
+        assert_eq!(new_offset, data_offset + frag1_plain.len() as u64);
+    }
+
+    #[test]
+    fn test_decrypt_fragment_data_multi_fragment_roundtrip() {
+        // Encrypt a plaintext, split into 3 fragments, decrypt each, verify concatenation.
+        let key = [0xABu8; 32];
+        let header = EncryptionHeader::new();
+
+        let plaintext: Vec<u8> = (0u8..=200).collect(); // 201 bytes
+
+        // Build the encrypted file as it would be stored: header + AES stream
+        let mut full_encrypted = plaintext.clone();
+        crypt_at(&key, &header.nonce, 0, &mut full_encrypted);
+        let mut file_bytes = header.to_bytes().to_vec();
+        file_bytes.extend_from_slice(&full_encrypted);
+
+        // Split into 3 roughly equal fragments
+        let total = file_bytes.len();
+        let split1 = total / 3;
+        let split2 = 2 * total / 3;
+        let frag0 = file_bytes[..split1].to_vec();
+        let frag1 = file_bytes[split1..split2].to_vec();
+        let frag2 = file_bytes[split2..].to_vec();
+
+        // Decrypt fragment 0
+        let (dec0, off0) = decrypt_fragment_data(&key, &header, &frag0, true, 0).unwrap();
+        // Decrypt fragment 1
+        let (dec1, off1) = decrypt_fragment_data(&key, &header, &frag1, false, off0).unwrap();
+        // Decrypt fragment 2
+        let (dec2, _) = decrypt_fragment_data(&key, &header, &frag2, false, off1).unwrap();
+
+        let mut result = dec0;
+        result.extend(dec1);
+        result.extend(dec2);
+        assert_eq!(result, plaintext);
+    }
+
+    #[test]
+    fn test_decrypt_fragment_data_first_too_short() {
+        let key = [0x42u8; 32];
+        let header = EncryptionHeader::new();
+        let short = vec![0u8; ENCRYPTION_HEADER_SIZE - 1];
+        assert!(decrypt_fragment_data(&key, &header, &short, true, 0).is_err());
     }
 
     #[test]
