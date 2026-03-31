@@ -327,9 +327,7 @@ impl Uploader {
                 fee: opt.fee,
                 nonce: U256::zero(),
             };
-            let (_, roots) = self
-                .batch_upload(batch.to_vec(), false, &batch_opt)
-                .await?;
+            let (_, roots) = self.batch_upload(batch.to_vec(), false, &batch_opt).await?;
             all_roots.extend(roots);
         }
 

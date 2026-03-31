@@ -208,8 +208,10 @@ pub async fn run_upload(args: &UploadArgs) -> Result<()> {
         if roots.len() == 1 {
             println!("root = 0x{}", hex::encode(roots[0]));
         } else {
-            let roots_str: Vec<String> =
-                roots.iter().map(|r| format!("0x{}", hex::encode(r))).collect();
+            let roots_str: Vec<String> = roots
+                .iter()
+                .map(|r| format!("0x{}", hex::encode(r)))
+                .collect();
             println!("roots = {}", roots_str.join(","));
         }
     } else {
