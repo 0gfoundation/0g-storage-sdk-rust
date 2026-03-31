@@ -12,7 +12,7 @@ use crate::node::client_zgs::{must_new_zgs_client, ZgsClient};
 use crate::transfer::downloader::{DownloadContext, Downloader};
 use crate::transfer::uploader::{Uploader, Web3Client};
 
-use anyhow::Result;
+use anyhow::{Context, Result};
 use ethers::types::H256;
 use futures::future::try_join_all;
 use serde_json::json;
@@ -247,6 +247,72 @@ impl IndexerClient {
             });
 
         try_join_all(futures).await
+    }
+
+    /// Download a list of fragment files (each identified by its root hash) via
+    /// the indexer and concatenate them into a single output file.
+    ///
+    /// Each root hash is resolved independently through the indexer so that
+    /// fragments stored on different nodes are handled transparently.
+    /// Pass `encryption_key` to decrypt a file that was encrypted before splitting.
+    pub async fn download_fragments(
+        &self,
+        roots: Vec<H256>,
+        file: &PathBuf,
+        with_proof: bool,
+        encryption_key: Option<&[u8; 32]>,
+    ) -> Result<()> {
+        if roots.is_empty() {
+            anyhow::bail!("No root hashes provided");
+        }
+
+        use std::io::Write as IoWrite;
+        let mut out = std::fs::File::create(file)
+            .with_context(|| format!("Failed to create output file {:?}", file))?;
+
+        use crate::transfer::encryption::{decrypt_fragment_data, EncryptionHeader};
+        let mut header: Option<EncryptionHeader> = None;
+        let mut data_offset: u64 = 0;
+
+        for (i, root) in roots.iter().enumerate() {
+            let temp_path = file.with_extension(format!("part.{}", i));
+
+            self.download(*root, &temp_path, with_proof)
+                .await
+                .with_context(|| format!("Failed to download fragment {}", i))?;
+
+            let fragment_data = std::fs::read(&temp_path)
+                .with_context(|| format!("Failed to read fragment {}", i))?;
+            let _ = std::fs::remove_file(&temp_path);
+
+            if let Some(key) = encryption_key {
+                if i == 0 {
+                    header = Some(
+                        EncryptionHeader::parse(&fragment_data)
+                            .context("Failed to parse encryption header from fragment 0")?,
+                    );
+                }
+                let hdr = header.as_ref().unwrap();
+                let (plaintext, new_offset) =
+                    decrypt_fragment_data(key, hdr, &fragment_data, i == 0, data_offset)
+                        .with_context(|| format!("Failed to decrypt fragment {}", i))?;
+                data_offset = new_offset;
+                out.write_all(&plaintext)
+                    .with_context(|| format!("Failed to write fragment {}", i))?;
+            } else {
+                out.write_all(&fragment_data)
+                    .with_context(|| format!("Failed to write fragment {}", i))?;
+            }
+
+            log::info!("Downloaded and appended fragment {}/{}", i + 1, roots.len());
+        }
+
+        log::info!(
+            "Completed assembling {} fragments into {:?}",
+            roots.len(),
+            file
+        );
+        Ok(())
     }
 
     pub async fn download(&self, root: H256, file: &PathBuf, with_proof: bool) -> Result<()> {
