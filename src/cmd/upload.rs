@@ -144,8 +144,6 @@ pub async fn run_upload(args: &UploadArgs) -> Result<()> {
     } else {
         Arc::new(File::open(&args.file)?)
     };
-    let tree = merkle_tree(file.clone()).await?;
-    let root = tree.root();
 
     let fee = U256::from(args.fee * 1e18 as u64);
     let nonce = U256::from(args.nonce);
@@ -183,19 +181,57 @@ pub async fn run_upload(args: &UploadArgs) -> Result<()> {
         .transpose()
         .with_context(|| "Invalid market address format")?;
 
-    if let Some(indexer_url) = &args.indexer {
-        let indexer_client = IndexerClient::new(indexer_url).await?;
-        indexer_client
-            .upload(web3_client, file, &opt, flow_address, market_address)
-            .await?;
+    if let Some(fragment_size) = args.fragment_size {
+        // Splitable upload: split into power-of-2-aligned fragments
+        let roots = if let Some(indexer_url) = &args.indexer {
+            let indexer_client = IndexerClient::new(indexer_url).await?;
+            indexer_client
+                .splitable_upload(
+                    web3_client,
+                    file,
+                    fragment_size as i64,
+                    &opt,
+                    flow_address,
+                    market_address,
+                )
+                .await?
+        } else {
+            let clients = must_new_zgs_clients(&args.node).await;
+            let uploader =
+                Uploader::new_with_addresses(web3_client, clients, flow_address, market_address)
+                    .await?;
+            uploader
+                .splitable_upload(file, fragment_size as i64, &opt)
+                .await?
+        };
+
+        if roots.len() == 1 {
+            println!("root = 0x{}", hex::encode(roots[0]));
+        } else {
+            let roots_str: Vec<String> =
+                roots.iter().map(|r| format!("0x{}", hex::encode(r))).collect();
+            println!("roots = {}", roots_str.join(","));
+        }
     } else {
-        let clients = must_new_zgs_clients(&args.node).await;
-        let uploader =
-            Uploader::new_with_addresses(web3_client, clients, flow_address, market_address)
+        // Single-file upload
+        let tree = merkle_tree(file.clone()).await?;
+        let root = tree.root();
+
+        if let Some(indexer_url) = &args.indexer {
+            let indexer_client = IndexerClient::new(indexer_url).await?;
+            indexer_client
+                .upload(web3_client, file, &opt, flow_address, market_address)
                 .await?;
-        uploader.upload(file, &opt).await?;
+        } else {
+            let clients = must_new_zgs_clients(&args.node).await;
+            let uploader =
+                Uploader::new_with_addresses(web3_client, clients, flow_address, market_address)
+                    .await?;
+            uploader.upload(file, &opt).await?;
+        }
+
+        println!("root = 0x{}", hex::encode(root));
     }
 
-    println!("root = 0x{}", hex::encode(root));
     Ok(())
 }
