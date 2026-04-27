@@ -4,13 +4,30 @@ use rand::Rng;
 
 type Aes256Ctr = ctr::Ctr128BE<aes::Aes256>;
 
-pub const ENCRYPTION_HEADER_SIZE: usize = 17;
-pub const ENCRYPTION_VERSION: u8 = 1;
+// --- Header constants ----------------------------------------------------
+// v1 = symmetric (AES key supplied out-of-band): 1B version + 16B nonce
+// v2 = ECIES (recipient supplies wallet private key): 1B version + 33B compressed
+//      ephemeral secp256k1 pubkey + 16B nonce
+pub const ENCRYPTION_VERSION_V1: u8 = 1;
+pub const ENCRYPTION_VERSION_V2: u8 = 2;
+pub const ENCRYPTION_HEADER_SIZE_V1: usize = 17;
+pub const ENCRYPTION_HEADER_SIZE_V2: usize = 50;
+pub const MAX_ENCRYPTION_HEADER_SIZE: usize = ENCRYPTION_HEADER_SIZE_V2;
+pub const EPHEMERAL_PUBKEY_SIZE: usize = 33;
 
-#[derive(Clone)]
+/// Backward-compat alias: callers in dependent crates may still import
+/// `ENCRYPTION_HEADER_SIZE` and treat it as the v1 size. New code should
+/// call `EncryptionHeader::size()` instead.
+pub const ENCRYPTION_HEADER_SIZE: usize = ENCRYPTION_HEADER_SIZE_V1;
+/// Backward-compat alias.
+pub const ENCRYPTION_VERSION: u8 = ENCRYPTION_VERSION_V1;
+
+#[derive(Clone, Debug)]
 pub struct EncryptionHeader {
     pub version: u8,
     pub nonce: [u8; 16],
+    /// Compressed secp256k1 ephemeral public key. `None` for v1, `Some(_)` for v2.
+    pub ephemeral_pub: Option<[u8; EPHEMERAL_PUBKEY_SIZE]>,
 }
 
 impl Default for EncryptionHeader {
@@ -20,37 +37,104 @@ impl Default for EncryptionHeader {
 }
 
 impl EncryptionHeader {
+    /// New v1 (symmetric) header with a random nonce.
     pub fn new() -> Self {
         let mut nonce = [0u8; 16];
         rand::thread_rng().fill(&mut nonce);
         Self {
-            version: ENCRYPTION_VERSION,
+            version: ENCRYPTION_VERSION_V1,
             nonce,
+            ephemeral_pub: None,
         }
     }
 
+    /// New v2 (ECIES) header carrying the supplied compressed ephemeral pubkey
+    /// and a fresh random nonce. The caller is responsible for deriving and
+    /// using the matching AES key (see `transfer::ecies::derive_ecies_encrypt_key`).
+    pub fn new_ecies(ephemeral_pub: [u8; EPHEMERAL_PUBKEY_SIZE]) -> Self {
+        let mut nonce = [0u8; 16];
+        rand::thread_rng().fill(&mut nonce);
+        Self {
+            version: ENCRYPTION_VERSION_V2,
+            nonce,
+            ephemeral_pub: Some(ephemeral_pub),
+        }
+    }
+
+    /// Serialized size of this header (17 for v1, 50 for v2).
+    pub fn size(&self) -> usize {
+        match self.version {
+            ENCRYPTION_VERSION_V2 => ENCRYPTION_HEADER_SIZE_V2,
+            _ => ENCRYPTION_HEADER_SIZE_V1,
+        }
+    }
+
+    /// Parse a header by dispatching on the leading version byte.
     pub fn parse(data: &[u8]) -> Result<Self> {
-        if data.len() < ENCRYPTION_HEADER_SIZE {
-            anyhow::bail!(
-                "Data too short for encryption header: {} < {}",
-                data.len(),
-                ENCRYPTION_HEADER_SIZE
-            );
+        if data.is_empty() {
+            anyhow::bail!("Data too short for encryption header: 0 bytes");
         }
         let version = data[0];
-        if version != ENCRYPTION_VERSION {
-            anyhow::bail!("Unsupported encryption version: {}", version);
+        match version {
+            ENCRYPTION_VERSION_V1 => {
+                if data.len() < ENCRYPTION_HEADER_SIZE_V1 {
+                    anyhow::bail!(
+                        "Data too short for v1 encryption header: {} < {}",
+                        data.len(),
+                        ENCRYPTION_HEADER_SIZE_V1
+                    );
+                }
+                let mut nonce = [0u8; 16];
+                nonce.copy_from_slice(&data[1..17]);
+                Ok(Self {
+                    version,
+                    nonce,
+                    ephemeral_pub: None,
+                })
+            }
+            ENCRYPTION_VERSION_V2 => {
+                if data.len() < ENCRYPTION_HEADER_SIZE_V2 {
+                    anyhow::bail!(
+                        "Data too short for v2 encryption header: {} < {}",
+                        data.len(),
+                        ENCRYPTION_HEADER_SIZE_V2
+                    );
+                }
+                let mut eph = [0u8; EPHEMERAL_PUBKEY_SIZE];
+                eph.copy_from_slice(&data[1..34]);
+                let mut nonce = [0u8; 16];
+                nonce.copy_from_slice(&data[34..50]);
+                Ok(Self {
+                    version,
+                    nonce,
+                    ephemeral_pub: Some(eph),
+                })
+            }
+            other => anyhow::bail!("Unsupported encryption version: {}", other),
         }
-        let mut nonce = [0u8; 16];
-        nonce.copy_from_slice(&data[1..17]);
-        Ok(Self { version, nonce })
     }
 
-    pub fn to_bytes(&self) -> [u8; ENCRYPTION_HEADER_SIZE] {
-        let mut buf = [0u8; ENCRYPTION_HEADER_SIZE];
-        buf[0] = self.version;
-        buf[1..17].copy_from_slice(&self.nonce);
-        buf
+    /// Serialize the header (size depends on version: 17 or 50 bytes).
+    pub fn to_bytes(&self) -> Vec<u8> {
+        match self.version {
+            ENCRYPTION_VERSION_V2 => {
+                let mut buf = vec![0u8; ENCRYPTION_HEADER_SIZE_V2];
+                buf[0] = ENCRYPTION_VERSION_V2;
+                let eph = self
+                    .ephemeral_pub
+                    .as_ref()
+                    .expect("v2 header without ephemeral_pub");
+                buf[1..34].copy_from_slice(eph);
+                buf[34..50].copy_from_slice(&self.nonce);
+                buf
+            }
+            _ => {
+                let mut buf = vec![0u8; ENCRYPTION_HEADER_SIZE_V1];
+                buf[0] = ENCRYPTION_VERSION_V1;
+                buf[1..17].copy_from_slice(&self.nonce);
+                buf
+            }
+        }
     }
 }
 
@@ -346,6 +430,49 @@ mod tests {
         let header = EncryptionHeader::new();
         let short = vec![0u8; ENCRYPTION_HEADER_SIZE - 1];
         assert!(decrypt_fragment_data(&key, &header, &short, true, 0).is_err());
+    }
+
+    #[test]
+    fn test_v2_header_roundtrip() {
+        let eph_pub = [0xAAu8; 33];
+        let header = EncryptionHeader::new_ecies(eph_pub);
+        assert_eq!(header.version, ENCRYPTION_VERSION_V2);
+        assert_eq!(header.size(), ENCRYPTION_HEADER_SIZE_V2);
+        assert_eq!(header.ephemeral_pub, Some(eph_pub));
+
+        let bytes = header.to_bytes();
+        assert_eq!(bytes.len(), ENCRYPTION_HEADER_SIZE_V2);
+        assert_eq!(bytes[0], ENCRYPTION_VERSION_V2);
+        assert_eq!(&bytes[1..34], &eph_pub);
+        assert_eq!(&bytes[34..50], &header.nonce);
+
+        let parsed = EncryptionHeader::parse(&bytes).unwrap();
+        assert_eq!(parsed.version, ENCRYPTION_VERSION_V2);
+        assert_eq!(parsed.nonce, header.nonce);
+        assert_eq!(parsed.ephemeral_pub, Some(eph_pub));
+        assert_eq!(parsed.size(), ENCRYPTION_HEADER_SIZE_V2);
+    }
+
+    #[test]
+    fn test_v1_header_size_unchanged() {
+        let header = EncryptionHeader::new();
+        assert_eq!(header.size(), ENCRYPTION_HEADER_SIZE_V1);
+        assert_eq!(header.size(), ENCRYPTION_HEADER_SIZE);
+        assert!(header.ephemeral_pub.is_none());
+    }
+
+    #[test]
+    fn test_parse_rejects_v2_short() {
+        let mut data = vec![0u8; 49];
+        data[0] = ENCRYPTION_VERSION_V2;
+        assert!(EncryptionHeader::parse(&data).is_err());
+    }
+
+    #[test]
+    fn test_parse_rejects_unknown_version() {
+        let mut data = vec![0u8; 50];
+        data[0] = 99;
+        assert!(EncryptionHeader::parse(&data).is_err());
     }
 
     #[test]
