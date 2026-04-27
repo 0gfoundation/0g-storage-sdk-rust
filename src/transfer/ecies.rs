@@ -40,8 +40,11 @@ pub fn derive_ecies_encrypt_key(
     let mut compressed = [0u8; EPHEMERAL_PUBKEY_SIZE];
     let encoded = ephemeral_pub.to_encoded_point(true);
     let bytes = encoded.as_bytes();
-    debug_assert_eq!(bytes.len(), EPHEMERAL_PUBKEY_SIZE,
-        "k256 invariant: compressed secp256k1 point is 33 bytes");
+    debug_assert_eq!(
+        bytes.len(),
+        EPHEMERAL_PUBKEY_SIZE,
+        "k256 invariant: compressed secp256k1 point is 33 bytes"
+    );
     compressed.copy_from_slice(bytes);
     Ok((aes_key, compressed))
 }
@@ -54,15 +57,12 @@ pub fn derive_ecies_decrypt_key(
     recipient_priv: &[u8; 32],
     ephemeral_pub_compressed: &[u8; EPHEMERAL_PUBKEY_SIZE],
 ) -> Result<[u8; 32]> {
-    let priv_key = SecretKey::from_slice(recipient_priv)
-        .context("invalid recipient private key")?;
+    let priv_key =
+        SecretKey::from_slice(recipient_priv).context("invalid recipient private key")?;
     let ephemeral_pub = PublicKey::from_sec1_bytes(ephemeral_pub_compressed)
         .context("invalid ephemeral public key")?;
 
-    let shared = diffie_hellman(
-        priv_key.to_nonzero_scalar(),
-        ephemeral_pub.as_affine(),
-    );
+    let shared = diffie_hellman(priv_key.to_nonzero_scalar(), ephemeral_pub.as_affine());
     hkdf_expand_aes(shared.raw_secret_bytes().as_slice())
 }
 
@@ -165,9 +165,7 @@ mod tests {
     /// wire-compatible with Go.
     #[test]
     fn decrypts_go_produced_v2_ciphertext() {
-        use crate::transfer::encryption::{
-            crypt_at, EncryptionHeader, ENCRYPTION_VERSION_V2,
-        };
+        use crate::transfer::encryption::{crypt_at, EncryptionHeader, ENCRYPTION_VERSION_V2};
 
         let wire = std::fs::read("tests/fixtures/ecies/v2_message.bin")
             .expect("fixture missing — regenerate via tests/fixtures/ecies/README");
@@ -179,8 +177,10 @@ mod tests {
         priv32.copy_from_slice(&priv_bytes);
 
         let header = EncryptionHeader::parse(&wire).unwrap();
-        assert_eq!(header.version, ENCRYPTION_VERSION_V2,
-            "fixture must be v2 ECIES");
+        assert_eq!(
+            header.version, ENCRYPTION_VERSION_V2,
+            "fixture must be v2 ECIES"
+        );
         let eph = header.ephemeral_pub.unwrap();
 
         let aes_key = derive_ecies_decrypt_key(&priv32, &eph).unwrap();

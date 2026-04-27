@@ -57,7 +57,10 @@ pub struct DownloadArgs {
     )]
     pub decrypt: bool,
 
-    #[arg(long, help = "[v2 asymmetric/ECIES] Hex-encoded 32-byte secp256k1 recipient wallet private key. Used with --decrypt.")]
+    #[arg(
+        long,
+        help = "[v2 asymmetric/ECIES] Hex-encoded 32-byte secp256k1 recipient wallet private key. Used with --decrypt."
+    )]
     pub private_key: Option<String>,
 }
 
@@ -129,9 +132,9 @@ pub async fn run_download(args: &DownloadArgs) -> Result<()> {
 
         let cfg = match (&enc_key, &wallet_priv) {
             (Some(k), None) => FragmentDecryptConfig::Symmetric { key: *k },
-            (None, Some(priv_key)) => {
-                FragmentDecryptConfig::Ecies { wallet_priv: *priv_key }
-            }
+            (None, Some(priv_key)) => FragmentDecryptConfig::Ecies {
+                wallet_priv: *priv_key,
+            },
             (None, None) => FragmentDecryptConfig::None,
             (Some(_), Some(_)) => unreachable!("guarded above"),
         };

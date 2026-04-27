@@ -1,5 +1,4 @@
 use super::download::download_file::DownloadingFile;
-use crate::transfer::ecies::derive_ecies_decrypt_key;
 use super::encryption::{
     crypt_at, decrypt_fragment_data, decrypt_segment, EncryptionHeader, ENCRYPTION_VERSION_V1,
     ENCRYPTION_VERSION_V2,
@@ -12,6 +11,7 @@ use crate::core::dataflow::{
 use crate::core::file::File;
 use crate::node::client_zgs::ZgsClient;
 use crate::node::types::FileInfo;
+use crate::transfer::ecies::derive_ecies_decrypt_key;
 
 use anyhow::{Context, Result};
 use ethers::types::H256;
@@ -762,8 +762,7 @@ impl DownloadContext {
             )
             .await?;
 
-        let encryption_active =
-            self.encryption_key.is_some() || self.wallet_private_key.is_some();
+        let encryption_active = self.encryption_key.is_some() || self.wallet_private_key.is_some();
         if encryption_active {
             let (header, key) = self.resolve_decryption_key(segment_index, &raw)?;
             Ok(decrypt_segment(
@@ -798,8 +797,7 @@ impl DownloadContext {
             )
             .await?;
 
-        let encryption_active =
-            self.encryption_key.is_some() || self.wallet_private_key.is_some();
+        let encryption_active = self.encryption_key.is_some() || self.wallet_private_key.is_some();
         if encryption_active {
             let (header, key) = self.resolve_decryption_key(segment_index, &raw)?;
             if segment_index == 0 {
@@ -841,19 +839,16 @@ impl DownloadContext {
         }
         let header = EncryptionHeader::parse(segment_data)?;
         let key = match header.version {
-            ENCRYPTION_VERSION_V1 => *self
-                .encryption_key
-                .as_ref()
-                .ok_or_else(|| anyhow::anyhow!(
-                    "v1 ciphertext but no symmetric encryption_key configured"
-                ))?,
+            ENCRYPTION_VERSION_V1 => *self.encryption_key.as_ref().ok_or_else(|| {
+                anyhow::anyhow!("v1 ciphertext but no symmetric encryption_key configured")
+            })?,
             ENCRYPTION_VERSION_V2 => {
                 let priv_key = self.wallet_private_key.as_ref().ok_or_else(|| {
                     anyhow::anyhow!("v2 ciphertext but no wallet_private_key configured")
                 })?;
-                let eph = header.ephemeral_pub.ok_or_else(|| {
-                    anyhow::anyhow!("v2 header missing ephemeral pubkey")
-                })?;
+                let eph = header
+                    .ephemeral_pub
+                    .ok_or_else(|| anyhow::anyhow!("v2 header missing ephemeral pubkey"))?;
                 derive_ecies_decrypt_key(priv_key, &eph)?
             }
             other => anyhow::bail!("Unsupported encryption version: {}", other),
@@ -881,7 +876,6 @@ impl DownloadContext {
         // The downloader/file_info/file_root fields are constructed with sentinel
         // values; the test only exercises resolve_decryption_key which doesn't touch them.
         use crate::node::types::Transaction;
-        use ethers::types::U256;
         Self {
             downloader: Downloader::new_test_only(),
             file_info: FileInfo {
@@ -939,9 +933,7 @@ pub fn get_shard_configs(clients: &[ZgsClient]) -> Vec<ShardConfig> {
 mod ecies_dispatch_tests {
     use super::*;
     use crate::transfer::ecies::derive_ecies_encrypt_key;
-    use crate::transfer::encryption::{
-        crypt_at, EncryptionHeader, ENCRYPTION_HEADER_SIZE_V2,
-    };
+    use crate::transfer::encryption::{crypt_at, EncryptionHeader, ENCRYPTION_HEADER_SIZE_V2};
     use k256::SecretKey;
     use rand::rngs::OsRng;
 
@@ -961,7 +953,9 @@ mod ecies_dispatch_tests {
         let mut priv_bytes = [0u8; 32];
         priv_bytes.copy_from_slice(&recipient_priv.to_bytes());
 
-        let cfg = FragmentDecryptConfig::Ecies { wallet_priv: priv_bytes };
+        let cfg = FragmentDecryptConfig::Ecies {
+            wallet_priv: priv_bytes,
+        };
         let mut state = FragmentDecryptState::default();
         let out = decrypt_fragment(&cfg, &mut state, &frag0, true).unwrap();
         assert_eq!(out, plaintext);

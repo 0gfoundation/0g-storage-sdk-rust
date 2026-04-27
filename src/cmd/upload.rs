@@ -158,8 +158,8 @@ pub async fn run_upload(args: &UploadArgs) -> Result<()> {
         if pk_bytes.len() != 32 {
             anyhow::bail!("--key must be 32 bytes (64 hex chars)");
         }
-        let secret = k256::SecretKey::from_slice(&pk_bytes)
-            .context("invalid secp256k1 private key")?;
+        let secret =
+            k256::SecretKey::from_slice(&pk_bytes).context("invalid secp256k1 private key")?;
         let pubkey_compressed = secret.public_key().to_sec1_bytes();
         let raw_file = Arc::new(File::open(&args.file)?);
         Arc::new(EncryptedData::new_ecies(raw_file, &pubkey_compressed)?)

@@ -308,9 +308,7 @@ mod tests {
     }
 
     use crate::transfer::ecies::derive_ecies_decrypt_key;
-    use crate::transfer::encryption::{
-        ENCRYPTION_HEADER_SIZE_V2, ENCRYPTION_VERSION_V1, ENCRYPTION_VERSION_V2,
-    };
+    use crate::transfer::encryption::{ENCRYPTION_HEADER_SIZE_V2, ENCRYPTION_VERSION_V2};
     use k256::SecretKey;
     use rand::rngs::OsRng;
 
@@ -322,7 +320,10 @@ mod tests {
         let recipient_pub = recipient_priv.public_key().to_sec1_bytes();
 
         let encrypted = EncryptedData::new_ecies(inner.clone(), &recipient_pub).unwrap();
-        assert_eq!(encrypted.size(), inner.size() + ENCRYPTION_HEADER_SIZE_V2 as i64);
+        assert_eq!(
+            encrypted.size(),
+            inner.size() + ENCRYPTION_HEADER_SIZE_V2 as i64
+        );
         assert_eq!(encrypted.header().version, ENCRYPTION_VERSION_V2);
         assert!(encrypted.header().ephemeral_pub.is_some());
     }

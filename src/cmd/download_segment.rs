@@ -53,7 +53,10 @@ pub struct DownloadSegmentArgs {
     )]
     pub decrypt: bool,
 
-    #[arg(long, help = "[v2 asymmetric/ECIES] Hex-encoded 32-byte secp256k1 recipient wallet private key. Used with --decrypt.")]
+    #[arg(
+        long,
+        help = "[v2 asymmetric/ECIES] Hex-encoded 32-byte secp256k1 recipient wallet private key. Used with --decrypt."
+    )]
     pub private_key: Option<String>,
 }
 
@@ -114,13 +117,15 @@ pub async fn run_download_segment(args: &DownloadSegmentArgs) -> Result<()> {
             }
             let header = EncryptionHeader::parse(&seg0)?;
             let aes_key = match header.version {
-                crate::transfer::encryption::ENCRYPTION_VERSION_V1 => *encryption_key
-                    .as_ref()
-                    .ok_or_else(|| anyhow::anyhow!("v1 ciphertext but --encryption-key not provided"))?,
+                crate::transfer::encryption::ENCRYPTION_VERSION_V1 => {
+                    *encryption_key.as_ref().ok_or_else(|| {
+                        anyhow::anyhow!("v1 ciphertext but --encryption-key not provided")
+                    })?
+                }
                 crate::transfer::encryption::ENCRYPTION_VERSION_V2 => {
-                    let priv_key = wallet_priv
-                        .as_ref()
-                        .ok_or_else(|| anyhow::anyhow!("v2 ciphertext but --private-key not provided"))?;
+                    let priv_key = wallet_priv.as_ref().ok_or_else(|| {
+                        anyhow::anyhow!("v2 ciphertext but --private-key not provided")
+                    })?;
                     let eph = header
                         .ephemeral_pub
                         .ok_or_else(|| anyhow::anyhow!("v2 header missing ephemeral pubkey"))?;
@@ -182,13 +187,15 @@ pub async fn run_download_segment(args: &DownloadSegmentArgs) -> Result<()> {
             }
             let header = EncryptionHeader::parse(&seg0)?;
             let aes_key = match header.version {
-                crate::transfer::encryption::ENCRYPTION_VERSION_V1 => *encryption_key
-                    .as_ref()
-                    .ok_or_else(|| anyhow::anyhow!("v1 ciphertext but --encryption-key not provided"))?,
+                crate::transfer::encryption::ENCRYPTION_VERSION_V1 => {
+                    *encryption_key.as_ref().ok_or_else(|| {
+                        anyhow::anyhow!("v1 ciphertext but --encryption-key not provided")
+                    })?
+                }
                 crate::transfer::encryption::ENCRYPTION_VERSION_V2 => {
-                    let priv_key = wallet_priv
-                        .as_ref()
-                        .ok_or_else(|| anyhow::anyhow!("v2 ciphertext but --private-key not provided"))?;
+                    let priv_key = wallet_priv.as_ref().ok_or_else(|| {
+                        anyhow::anyhow!("v2 ciphertext but --private-key not provided")
+                    })?;
                     let eph = header
                         .ephemeral_pub
                         .ok_or_else(|| anyhow::anyhow!("v2 header missing ephemeral pubkey"))?;

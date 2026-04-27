@@ -18,7 +18,9 @@ pub const EPHEMERAL_PUBKEY_SIZE: usize = 33;
 /// Backward-compat alias: callers in dependent crates may still import
 /// `ENCRYPTION_HEADER_SIZE` and treat it as the v1 size. New code should
 /// call `EncryptionHeader::size()` instead.
-#[deprecated(note = "use EncryptionHeader::size() (returns 17 or 50) — this constant is the v1 size only")]
+#[deprecated(
+    note = "use EncryptionHeader::size() (returns 17 or 50) — this constant is the v1 size only"
+)]
 pub const ENCRYPTION_HEADER_SIZE: usize = ENCRYPTION_HEADER_SIZE_V1;
 /// Backward-compat alias.
 #[deprecated(note = "use ENCRYPTION_VERSION_V1 / ENCRYPTION_VERSION_V2 explicitly")]
@@ -531,8 +533,7 @@ mod tests {
         let mut fragment0 = header.to_bytes();
         fragment0.extend_from_slice(&encrypted);
 
-        let (got, new_offset) =
-            decrypt_fragment_data(&key, &header, &fragment0, true, 0).unwrap();
+        let (got, new_offset) = decrypt_fragment_data(&key, &header, &fragment0, true, 0).unwrap();
         assert_eq!(got, plaintext);
         assert_eq!(new_offset, plaintext.len() as u64);
     }
