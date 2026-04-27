@@ -117,14 +117,13 @@ pub struct UploadArgs {
 
     #[arg(
         long,
-        help = "Hex-encoded AES-256 encryption key (64 hex chars, optional 0x prefix)"
+        help = "[v1 symmetric] Hex-encoded 32-byte AES key (64 hex chars, optional 0x prefix). For asymmetric (ECIES), use --encrypt instead. Mutually exclusive with --encrypt."
     )]
     pub encryption_key: Option<String>,
 
     #[arg(
         long,
-        help = "Use ECIES (asymmetric) encryption with the signer's wallet pubkey \
-                (mutually exclusive with --encryption-key)"
+        help = "[v2 asymmetric/ECIES] Encrypt to the signer's wallet pubkey (derived from --key). Recipient decrypts with their matching wallet private key. Mutually exclusive with --encryption-key."
     )]
     pub encrypt: bool,
 }

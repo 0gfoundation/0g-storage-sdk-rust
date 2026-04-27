@@ -47,18 +47,17 @@ pub struct DownloadArgs {
 
     #[arg(
         long,
-        help = "Hex-encoded AES-256 encryption key (64 hex chars, optional 0x prefix)"
+        help = "[v1 symmetric] Hex-encoded 32-byte AES key (64 hex chars, optional 0x prefix). For asymmetric (ECIES), use --decrypt --private-key instead. Mutually exclusive with --decrypt."
     )]
     pub encryption_key: Option<String>,
 
     #[arg(
         long,
-        help = "Decrypt v2 (ECIES) ciphertext using --private-key as the recipient \
-                wallet private key (mutually exclusive with --encryption-key)"
+        help = "[v2 asymmetric/ECIES] Decrypt ciphertext using --private-key as the recipient wallet private key. Mutually exclusive with --encryption-key (v1)."
     )]
     pub decrypt: bool,
 
-    #[arg(long, help = "Hex-encoded recipient secp256k1 wallet private key (used with --decrypt)")]
+    #[arg(long, help = "[v2 asymmetric/ECIES] Hex-encoded 32-byte secp256k1 recipient wallet private key. Used with --decrypt.")]
     pub private_key: Option<String>,
 }
 
