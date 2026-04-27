@@ -19,6 +19,8 @@ pub const ECIES_HKDF_INFO: &[u8] = b"0g-storage-client/ecies/v1/aes-256";
 /// Generate a fresh ephemeral keypair, perform ECDH against `recipient_pub_compressed`
 /// (33-byte SEC1 compressed secp256k1 point), derive a 32-byte AES-256 key via HKDF-SHA256,
 /// and return `(aes_key, ephemeral_pub_compressed)`.
+///
+/// Note: callers should zeroize the returned AES key after use.
 pub fn derive_ecies_encrypt_key(
     recipient_pub_compressed: &[u8],
 ) -> Result<([u8; 32], [u8; EPHEMERAL_PUBKEY_SIZE])> {
@@ -38,19 +40,16 @@ pub fn derive_ecies_encrypt_key(
     let mut compressed = [0u8; EPHEMERAL_PUBKEY_SIZE];
     let encoded = ephemeral_pub.to_encoded_point(true);
     let bytes = encoded.as_bytes();
-    if bytes.len() != EPHEMERAL_PUBKEY_SIZE {
-        anyhow::bail!(
-            "unexpected compressed pubkey length: {} (want {})",
-            bytes.len(),
-            EPHEMERAL_PUBKEY_SIZE
-        );
-    }
+    debug_assert_eq!(bytes.len(), EPHEMERAL_PUBKEY_SIZE,
+        "k256 invariant: compressed secp256k1 point is 33 bytes");
     compressed.copy_from_slice(bytes);
     Ok((aes_key, compressed))
 }
 
 /// Recover the AES-256 key from `recipient_priv` (32-byte secp256k1 scalar)
 /// and `ephemeral_pub_compressed` (33-byte SEC1 compressed) read from the file header.
+///
+/// Note: callers are responsible for zeroizing `recipient_priv` and the returned key after use.
 pub fn derive_ecies_decrypt_key(
     recipient_priv: &[u8; 32],
     ephemeral_pub_compressed: &[u8; EPHEMERAL_PUBKEY_SIZE],
