@@ -60,6 +60,13 @@ pub fn decrypt_fragment(
             if is_first {
                 let header = EncryptionHeader::parse(fragment_data)
                     .context("parse v1/v2 encryption header from fragment 0")?;
+                if header.version != ENCRYPTION_VERSION_V1 {
+                    anyhow::bail!(
+                        "encryption_key supplied but ciphertext is not v1 (got version {}); \
+                         use FragmentDecryptConfig::Ecies for v2",
+                        header.version
+                    );
+                }
                 state.header = Some(header);
                 state.aes_key = Some(*key);
             }
@@ -896,6 +903,32 @@ impl DownloadContext {
             cached: Mutex::new(None),
         }
     }
+
+    #[cfg(test)]
+    pub(crate) fn test_only_with_encryption_key(key: [u8; 32]) -> Self {
+        // No-network context for unit-testing v1 dispatch logic.
+        use crate::node::types::Transaction;
+        Self {
+            downloader: Downloader::new_test_only(),
+            file_info: FileInfo {
+                tx: Transaction {
+                    stream_ids: vec![],
+                    data: vec![],
+                    data_merkle_root: H256::zero(),
+                    start_entry_index: 0,
+                    size: 0,
+                    seq: 0,
+                },
+                finalized: false,
+                is_cached: false,
+                uploaded_seg_num: 0,
+            },
+            file_root: H256::zero(),
+            encryption_key: Some(key),
+            wallet_private_key: None,
+            cached: Mutex::new(None),
+        }
+    }
 }
 
 pub fn get_shard_configs(clients: &[ZgsClient]) -> Vec<ShardConfig> {
@@ -961,5 +994,31 @@ mod ecies_dispatch_tests {
         let cached_header = ctx.encryption_header().unwrap();
         assert_eq!(cached_header.version, 2);
         assert_eq!(cached_header.size(), ENCRYPTION_HEADER_SIZE_V2);
+    }
+
+    #[test]
+    fn resolves_v1_key_from_encryption_key() {
+        use crate::transfer::encryption::{
+            crypt_at, EncryptionHeader, ENCRYPTION_HEADER_SIZE_V1, ENCRYPTION_VERSION_V1,
+        };
+
+        let aes_key = [0x55u8; 32];
+        let header = EncryptionHeader::new();
+        assert_eq!(header.version, ENCRYPTION_VERSION_V1);
+
+        let plaintext = b"v1 ctx test payload".to_vec();
+        let mut encrypted = plaintext.clone();
+        crypt_at(&aes_key, &header.nonce, 0, &mut encrypted);
+        let mut seg0 = header.to_bytes();
+        seg0.extend_from_slice(&encrypted);
+
+        let ctx = DownloadContext::test_only_with_encryption_key(aes_key);
+
+        let (header_out, key_out) = ctx
+            .resolve_decryption_key(0, &seg0)
+            .expect("ctx must return v1 key from segment 0");
+        assert_eq!(key_out, aes_key);
+        assert_eq!(header_out.version, ENCRYPTION_VERSION_V1);
+        assert_eq!(header_out.size(), ENCRYPTION_HEADER_SIZE_V1);
     }
 }

@@ -3,7 +3,7 @@ use crate::core::dataflow::DEFAULT_SEGMENT_SIZE;
 use crate::indexer::client::IndexerClient;
 use crate::node::client_zgs::must_new_zgs_clients;
 use crate::transfer::downloader::Downloader;
-use crate::transfer::encryption::{decrypt_segment, EncryptionHeader, ENCRYPTION_HEADER_SIZE};
+use crate::transfer::encryption::{decrypt_segment, EncryptionHeader, ENCRYPTION_HEADER_SIZE_V1};
 use anyhow::{Context, Result};
 use clap::Args;
 use ethers::types::H256;
@@ -110,7 +110,7 @@ pub async fn run_download_segment(args: &DownloadSegmentArgs) -> Result<()> {
         let segment = if encryption_key.is_some() || wallet_priv.is_some() {
             // For decryption, we always need segment 0 to get the header
             let seg0 = ctx.download_segment(0, args.proof).await?;
-            if seg0.len() < ENCRYPTION_HEADER_SIZE {
+            if seg0.len() < ENCRYPTION_HEADER_SIZE_V1 {
                 anyhow::bail!("Segment 0 too short for encryption header");
             }
             let header = EncryptionHeader::parse(&seg0)?;
@@ -178,7 +178,7 @@ pub async fn run_download_segment(args: &DownloadSegmentArgs) -> Result<()> {
             let seg0 = downloader
                 .download_segment(file_root, file_info.tx.seq, 0, args.proof, &file_info)
                 .await?;
-            if seg0.len() < ENCRYPTION_HEADER_SIZE {
+            if seg0.len() < ENCRYPTION_HEADER_SIZE_V1 {
                 anyhow::bail!("Segment 0 too short for encryption header");
             }
             let header = EncryptionHeader::parse(&seg0)?;
