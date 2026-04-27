@@ -631,10 +631,10 @@ pub struct DownloadContext {
     /// v2: 32-byte secp256k1 wallet private key. Used to derive the AES key
     /// from the ephemeral pubkey carried in the v2 header.
     wallet_private_key: Option<[u8; 32]>,
-    encryption_header: Mutex<Option<EncryptionHeader>>,
-    /// AES key cached after first segment-0 download (for v2 this is the
-    /// ECIES-derived key; for v1 it equals `encryption_key`).
-    derived_aes_key: Mutex<Option<[u8; 32]>>,
+    /// Header + AES key, jointly cached after the first segment-0 download.
+    /// Stored as a single Option so concurrent segment downloads cannot
+    /// observe a torn state where one is set without the other.
+    cached: Mutex<Option<(EncryptionHeader, [u8; 32])>>,
 }
 
 impl DownloadContext {
@@ -651,8 +651,7 @@ impl DownloadContext {
             file_root,
             encryption_key: None,
             wallet_private_key: None,
-            encryption_header: Mutex::new(None),
-            derived_aes_key: Mutex::new(None),
+            cached: Mutex::new(None),
         })
     }
 
@@ -666,7 +665,8 @@ impl DownloadContext {
     /// Enable decryption for v2 (ECIES) ciphertext using the recipient's
     /// 32-byte secp256k1 wallet private key. The AES key is derived after
     /// segment 0 is downloaded and the v2 header is parsed.
-    /// Mutually exclusive with `with_encryption`.
+    /// If both `with_encryption` and `with_wallet_private_key` are configured,
+    /// the on-wire header version determines which key is used.
     pub fn with_wallet_private_key(mut self, priv_key: [u8; 32]) -> Self {
         self.wallet_private_key = Some(priv_key);
         self
@@ -689,13 +689,7 @@ impl DownloadContext {
         let encryption_active =
             self.encryption_key.is_some() || self.wallet_private_key.is_some();
         if encryption_active {
-            let key = self.resolve_decryption_key(segment_index, &raw)?;
-            let header = self
-                .encryption_header
-                .lock()
-                .unwrap()
-                .clone()
-                .expect("header cached by resolve_decryption_key");
+            let (header, key) = self.resolve_decryption_key(segment_index, &raw)?;
             Ok(decrypt_segment(
                 &key,
                 segment_index,
@@ -731,15 +725,8 @@ impl DownloadContext {
         let encryption_active =
             self.encryption_key.is_some() || self.wallet_private_key.is_some();
         if encryption_active {
-            let key = self.resolve_decryption_key(segment_index, &raw)?;
-            let header = self
-                .encryption_header
-                .lock()
-                .unwrap()
-                .clone()
-                .expect("header cached by resolve_decryption_key");
+            let (header, key) = self.resolve_decryption_key(segment_index, &raw)?;
             if segment_index == 0 {
-                // Decrypt data after header, but preserve the header bytes
                 let mut result = raw;
                 let header_size = header.size();
                 crypt_at(&key, &header.nonce, 0, &mut result[header_size..]);
@@ -759,19 +746,20 @@ impl DownloadContext {
     }
 
     /// Parse the encryption header from segment 0 (caching it), then return
-    /// the AES key to use for decrypting this and subsequent segments.
-    /// Dispatches on header version: v1 returns the configured symmetric key,
-    /// v2 derives an AES key from the wallet private key + ephemeral pubkey.
+    /// the (header, AES key) pair to use for decrypting this and subsequent
+    /// segments.  Dispatches on header version: v1 returns the configured
+    /// symmetric key, v2 derives an AES key from the wallet private key +
+    /// ephemeral pubkey.  The lock is held for the entire parse+derive+cache
+    /// write so concurrent callers cannot observe torn state.
     pub(crate) fn resolve_decryption_key(
         &self,
         segment_index: u64,
         segment_data: &[u8],
-    ) -> Result<[u8; 32]> {
-        // Fast path: already derived.
-        if let Some(k) = *self.derived_aes_key.lock().unwrap() {
-            return Ok(k);
+    ) -> Result<(EncryptionHeader, [u8; 32])> {
+        let mut guard = self.cached.lock().unwrap();
+        if let Some(cached) = guard.as_ref() {
+            return Ok(cached.clone());
         }
-        // Need segment 0 to parse the header on first call.
         if segment_index != 0 {
             anyhow::bail!("Encryption header not yet available; download segment 0 first");
         }
@@ -785,9 +773,7 @@ impl DownloadContext {
                 ))?,
             ENCRYPTION_VERSION_V2 => {
                 let priv_key = self.wallet_private_key.as_ref().ok_or_else(|| {
-                    anyhow::anyhow!(
-                        "v2 ciphertext but no wallet_private_key configured"
-                    )
+                    anyhow::anyhow!("v2 ciphertext but no wallet_private_key configured")
                 })?;
                 let eph = header.ephemeral_pub.ok_or_else(|| {
                     anyhow::anyhow!("v2 header missing ephemeral pubkey")
@@ -796,14 +782,13 @@ impl DownloadContext {
             }
             other => anyhow::bail!("Unsupported encryption version: {}", other),
         };
-        *self.encryption_header.lock().unwrap() = Some(header);
-        *self.derived_aes_key.lock().unwrap() = Some(key);
-        Ok(key)
+        *guard = Some((header.clone(), key));
+        Ok((header, key))
     }
 
     /// Returns the parsed encryption header, if segment 0 has been downloaded.
     pub fn encryption_header(&self) -> Option<EncryptionHeader> {
-        self.encryption_header.lock().unwrap().clone()
+        self.cached.lock().unwrap().as_ref().map(|(h, _)| h.clone())
     }
 
     pub fn file_root(&self) -> H256 {
@@ -839,8 +824,7 @@ impl DownloadContext {
             file_root: H256::zero(),
             encryption_key: None,
             wallet_private_key: Some(priv_key),
-            encryption_header: Mutex::new(None),
-            derived_aes_key: Mutex::new(None),
+            cached: Mutex::new(None),
         }
     }
 }
@@ -881,7 +865,7 @@ mod ecies_dispatch_tests {
         let resolved = ctx
             .resolve_decryption_key(0, &seg0)
             .expect("ctx must derive aes key from segment 0");
-        assert_eq!(resolved, aes_key);
+        assert_eq!(resolved.1, aes_key);
 
         let cached_header = ctx.encryption_header().unwrap();
         assert_eq!(cached_header.version, 2);
