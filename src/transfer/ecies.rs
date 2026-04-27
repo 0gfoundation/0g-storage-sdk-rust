@@ -158,4 +158,39 @@ mod tests {
             "HKDF KAT mismatch — ECIES_HKDF_INFO or HKDF setup is wrong; Go interop will break"
         );
     }
+
+    /// Cross-implementation interop test: decrypt a Go-produced v2 ECIES message
+    /// with the Rust implementation. Pinned fixtures live at
+    /// `tests/fixtures/ecies/`. If this test fails the Rust impl is no longer
+    /// wire-compatible with Go.
+    #[test]
+    fn decrypts_go_produced_v2_ciphertext() {
+        use crate::transfer::encryption::{
+            crypt_at, EncryptionHeader, ENCRYPTION_VERSION_V2,
+        };
+
+        let wire = std::fs::read("tests/fixtures/ecies/v2_message.bin")
+            .expect("fixture missing — regenerate via tests/fixtures/ecies/README");
+        let expected = std::fs::read("tests/fixtures/ecies/v2_plaintext.txt").unwrap();
+        let priv_hex = std::fs::read_to_string("tests/fixtures/ecies/recipient_priv.hex").unwrap();
+
+        let priv_bytes = hex::decode(priv_hex.trim()).unwrap();
+        let mut priv32 = [0u8; 32];
+        priv32.copy_from_slice(&priv_bytes);
+
+        let header = EncryptionHeader::parse(&wire).unwrap();
+        assert_eq!(header.version, ENCRYPTION_VERSION_V2,
+            "fixture must be v2 ECIES");
+        let eph = header.ephemeral_pub.unwrap();
+
+        let aes_key = derive_ecies_decrypt_key(&priv32, &eph).unwrap();
+        let header_size = header.size();
+        let mut plaintext = wire[header_size..].to_vec();
+        crypt_at(&aes_key, &header.nonce, 0, &mut plaintext);
+
+        assert_eq!(
+            plaintext, expected,
+            "Go-produced v2 ciphertext failed to decrypt with Rust — wire format drift"
+        );
+    }
 }
