@@ -18,8 +18,10 @@ pub const EPHEMERAL_PUBKEY_SIZE: usize = 33;
 /// Backward-compat alias: callers in dependent crates may still import
 /// `ENCRYPTION_HEADER_SIZE` and treat it as the v1 size. New code should
 /// call `EncryptionHeader::size()` instead.
+#[deprecated(note = "use EncryptionHeader::size() (returns 17 or 50) — this constant is the v1 size only")]
 pub const ENCRYPTION_HEADER_SIZE: usize = ENCRYPTION_HEADER_SIZE_V1;
 /// Backward-compat alias.
+#[deprecated(note = "use ENCRYPTION_VERSION_V1 / ENCRYPTION_VERSION_V2 explicitly")]
 pub const ENCRYPTION_VERSION: u8 = ENCRYPTION_VERSION_V1;
 
 #[derive(Clone, Debug)]
@@ -115,6 +117,12 @@ impl EncryptionHeader {
     }
 
     /// Serialize the header (size depends on version: 17 or 50 bytes).
+    ///
+    /// # Panics
+    /// Panics if `version == ENCRYPTION_VERSION_V2` but `ephemeral_pub` is `None`.
+    /// In normal use this state is unreachable: `new_ecies()` always sets the field,
+    /// and `parse()` rejects v2 headers that lack the ephemeral pubkey. The panic
+    /// only fires if a caller constructs the struct directly with mismatched fields.
     pub fn to_bytes(&self) -> Vec<u8> {
         match self.version {
             ENCRYPTION_VERSION_V2 => {
@@ -156,6 +164,7 @@ pub fn crypt_at(key: &[u8; 32], nonce: &[u8; 16], offset: u64, data: &mut [u8]) 
 ///
 /// Returns `(plaintext, new_data_offset)` where `new_data_offset` should be
 /// passed as `data_offset` for the next fragment.
+#[allow(deprecated)]
 pub fn decrypt_fragment_data(
     key: &[u8; 32],
     header: &EncryptionHeader,
@@ -184,6 +193,7 @@ pub fn decrypt_fragment_data(
 
 /// Decrypt a full downloaded file in-place: strip header, decrypt remaining bytes.
 /// Returns the decrypted data (without header).
+#[allow(deprecated)]
 pub fn decrypt_file(key: &[u8; 32], encrypted: &[u8]) -> Result<Vec<u8>> {
     if encrypted.len() < ENCRYPTION_HEADER_SIZE {
         anyhow::bail!("Encrypted data too short");
@@ -199,6 +209,7 @@ pub fn decrypt_file(key: &[u8; 32], encrypted: &[u8]) -> Result<Vec<u8>> {
 /// For other segments: decrypts using the provided header's nonce with the correct data offset.
 ///
 /// `segment_size` is the standard segment size (e.g. DEFAULT_SEGMENT_SIZE = 256KB).
+#[allow(deprecated)]
 pub fn decrypt_segment(
     key: &[u8; 32],
     segment_index: u64,
@@ -227,6 +238,7 @@ mod tests {
     use super::*;
 
     #[test]
+    #[allow(deprecated)]
     fn test_header_roundtrip() {
         let header = EncryptionHeader::new();
         let bytes = header.to_bytes();
@@ -290,6 +302,7 @@ mod tests {
     }
 
     #[test]
+    #[allow(deprecated)]
     fn test_decrypt_segment_zero() {
         let key = [0x42u8; 32];
         let header = EncryptionHeader::new();
@@ -310,6 +323,7 @@ mod tests {
     }
 
     #[test]
+    #[allow(deprecated)]
     fn test_decrypt_segment_nonzero() {
         let key = [0x42u8; 32];
         let header = EncryptionHeader::new();
@@ -326,6 +340,7 @@ mod tests {
     }
 
     #[test]
+    #[allow(deprecated)]
     fn test_decrypt_segment_padded_preserves_header() {
         // Simulates what DownloadContext::download_segment_padded does for segment 0
         let key = [0x42u8; 32];
@@ -355,6 +370,7 @@ mod tests {
     }
 
     #[test]
+    #[allow(deprecated)]
     fn test_decrypt_fragment_data_first() {
         let key = [0x42u8; 32];
         let header = EncryptionHeader::new();
@@ -425,6 +441,7 @@ mod tests {
     }
 
     #[test]
+    #[allow(deprecated)]
     fn test_decrypt_fragment_data_first_too_short() {
         let key = [0x42u8; 32];
         let header = EncryptionHeader::new();
@@ -454,6 +471,7 @@ mod tests {
     }
 
     #[test]
+    #[allow(deprecated)]
     fn test_v1_header_size_unchanged() {
         let header = EncryptionHeader::new();
         assert_eq!(header.size(), ENCRYPTION_HEADER_SIZE_V1);
@@ -476,6 +494,7 @@ mod tests {
     }
 
     #[test]
+    #[allow(deprecated)]
     fn test_multi_segment_decrypt_matches_full_file() {
         // Encrypt a file spanning 2 segments, decrypt per-segment, verify matches full decrypt
         let key = [0x42u8; 32];
