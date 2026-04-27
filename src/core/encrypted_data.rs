@@ -1,6 +1,7 @@
 use super::dataflow::{IterableData, DEFAULT_CHUNK_SIZE, DEFAULT_SEGMENT_SIZE};
 use super::iterator::{iterator_padded_size, Iterator as CustomIterator};
-use crate::transfer::encryption::{crypt_at, EncryptionHeader, ENCRYPTION_HEADER_SIZE};
+use crate::transfer::ecies::derive_ecies_encrypt_key;
+use crate::transfer::encryption::{crypt_at, EncryptionHeader};
 use anyhow::Result;
 use std::sync::Arc;
 
@@ -8,20 +9,45 @@ pub struct EncryptedData {
     inner: Arc<dyn IterableData>,
     key: [u8; 32],
     header: EncryptionHeader,
+    header_size: i64,
     encrypted_size: i64,
     padded_size: u64,
 }
 
 impl EncryptedData {
+    /// Symmetric (v1) AES-256-CTR. Caller supplies the 32-byte key out-of-band.
     pub fn new(inner: Arc<dyn IterableData>, key: [u8; 32]) -> Result<Self> {
         let header = EncryptionHeader::new();
-        let encrypted_size = inner.size() + ENCRYPTION_HEADER_SIZE as i64;
+        Self::build(inner, key, header)
+    }
+
+    /// ECIES (v2). Generates an ephemeral keypair, performs ECDH against
+    /// `recipient_pub_compressed` (33-byte SEC1), derives an AES-256 key via
+    /// HKDF-SHA256, and stores the ephemeral pubkey in the header so the
+    /// recipient can recover the key with their wallet private key.
+    pub fn new_ecies(
+        inner: Arc<dyn IterableData>,
+        recipient_pub_compressed: &[u8],
+    ) -> Result<Self> {
+        let (key, ephemeral_pub) = derive_ecies_encrypt_key(recipient_pub_compressed)?;
+        let header = EncryptionHeader::new_ecies(ephemeral_pub);
+        Self::build(inner, key, header)
+    }
+
+    fn build(
+        inner: Arc<dyn IterableData>,
+        key: [u8; 32],
+        header: EncryptionHeader,
+    ) -> Result<Self> {
+        let header_size = header.size() as i64;
+        let encrypted_size = inner.size() + header_size;
         let padded_size = iterator_padded_size(encrypted_size as usize, true);
 
         Ok(EncryptedData {
             inner,
             key,
             header,
+            header_size,
             encrypted_size,
             padded_size,
         })
@@ -69,14 +95,14 @@ impl IterableData for EncryptedData {
             return Ok(0);
         }
 
-        let header_size = ENCRYPTION_HEADER_SIZE as i64;
+        let header_size = self.header_size;
         let mut written = 0;
 
         // If offset falls within the header region
         if offset < header_size {
             let header_bytes = self.header.to_bytes();
             let header_start = offset as usize;
-            let header_end = std::cmp::min(ENCRYPTION_HEADER_SIZE, header_start + buf.len());
+            let header_end = std::cmp::min(self.header_size as usize, header_start + buf.len());
             let n = header_end - header_start;
             buf[..n].copy_from_slice(&header_bytes[header_start..header_end]);
             written += n;
@@ -186,7 +212,7 @@ impl<'a> CustomIterator for EncryptedDataIterator<'a> {
 mod tests {
     use super::*;
     use crate::core::in_mem::DataInMemory;
-    use crate::transfer::encryption::decrypt_file;
+    use crate::transfer::encryption::{decrypt_file, ENCRYPTION_HEADER_SIZE_V1};
 
     #[test]
     fn test_encrypted_data_size() {
@@ -197,7 +223,7 @@ mod tests {
 
         assert_eq!(
             encrypted.size(),
-            inner.size() + ENCRYPTION_HEADER_SIZE as i64
+            inner.size() + ENCRYPTION_HEADER_SIZE_V1 as i64
         );
     }
 
@@ -209,9 +235,9 @@ mod tests {
         let encrypted = EncryptedData::new(inner, key).unwrap();
 
         // Read just the header
-        let mut buf = vec![0u8; ENCRYPTION_HEADER_SIZE];
+        let mut buf = vec![0u8; ENCRYPTION_HEADER_SIZE_V1];
         let n = encrypted.read(&mut buf, 0).unwrap();
-        assert_eq!(n, ENCRYPTION_HEADER_SIZE);
+        assert_eq!(n, ENCRYPTION_HEADER_SIZE_V1);
         assert_eq!(buf[0], 1); // version
         assert_eq!(&buf[1..17], &encrypted.header().nonce);
     }
@@ -279,5 +305,48 @@ mod tests {
         let mut read_buf = vec![0u8; encrypted_size];
         encrypted.read(&mut read_buf, 0).unwrap();
         assert_eq!(&collected[..encrypted_size], &read_buf);
+    }
+
+    use crate::transfer::ecies::derive_ecies_decrypt_key;
+    use crate::transfer::encryption::{ENCRYPTION_HEADER_SIZE_V2, ENCRYPTION_VERSION_V2};
+    use k256::SecretKey;
+    use rand::rngs::OsRng;
+
+    #[test]
+    fn test_encrypted_data_ecies_size() {
+        let original = vec![1u8; 1000];
+        let inner = Arc::new(DataInMemory::new(original.clone()).unwrap());
+        let recipient_priv = SecretKey::random(&mut OsRng);
+        let recipient_pub = recipient_priv.public_key().to_sec1_bytes();
+
+        let encrypted = EncryptedData::new_ecies(inner.clone(), &recipient_pub).unwrap();
+        assert_eq!(encrypted.size(), inner.size() + ENCRYPTION_HEADER_SIZE_V2 as i64);
+        assert_eq!(encrypted.header().version, ENCRYPTION_VERSION_V2);
+        assert!(encrypted.header().ephemeral_pub.is_some());
+    }
+
+    #[test]
+    fn test_encrypted_data_ecies_roundtrip() {
+        let original = b"hello ECIES round-trip via EncryptedData".to_vec();
+        let inner = Arc::new(DataInMemory::new(original.clone()).unwrap());
+        let recipient_priv = SecretKey::random(&mut OsRng);
+        let recipient_pub = recipient_priv.public_key().to_sec1_bytes();
+
+        let encrypted = EncryptedData::new_ecies(inner, &recipient_pub).unwrap();
+        let encrypted_size = encrypted.size() as usize;
+        let mut buf = vec![0u8; encrypted_size];
+        let n = encrypted.read(&mut buf, 0).unwrap();
+        assert_eq!(n, encrypted_size);
+
+        // Recipient parses header, derives key, decrypts.
+        let header = crate::transfer::encryption::EncryptionHeader::parse(&buf).unwrap();
+        let eph = header.ephemeral_pub.unwrap();
+        let mut priv_bytes = [0u8; 32];
+        priv_bytes.copy_from_slice(&recipient_priv.to_bytes());
+        let aes_key = derive_ecies_decrypt_key(&priv_bytes, &eph).unwrap();
+
+        let mut plaintext = buf[ENCRYPTION_HEADER_SIZE_V2..].to_vec();
+        crate::transfer::encryption::crypt_at(&aes_key, &header.nonce, 0, &mut plaintext);
+        assert_eq!(plaintext, original);
     }
 }
