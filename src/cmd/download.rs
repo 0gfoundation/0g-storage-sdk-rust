@@ -1,7 +1,7 @@
 use crate::common::utils::duration_from_str;
 use crate::indexer::client::IndexerClient;
 use crate::node::client_zgs::must_new_zgs_clients;
-use crate::transfer::downloader::Downloader;
+use crate::transfer::downloader::{Downloader, FragmentDecryptConfig};
 use crate::transfer::encryption::decrypt_file;
 use anyhow::{Context, Result};
 use clap::Args;
@@ -98,16 +98,21 @@ pub async fn run_download(args: &DownloadArgs) -> Result<()> {
             .collect();
         let roots = roots?;
 
+        let cfg = match &enc_key {
+            Some(k) => FragmentDecryptConfig::Symmetric { key: *k },
+            None => FragmentDecryptConfig::None,
+        };
+
         if let Some(indexer_url) = &args.indexer {
             let indexer_client = IndexerClient::new(indexer_url).await?;
             indexer_client
-                .download_fragments(roots, &args.file, args.proof, enc_key.as_ref())
+                .download_fragments(roots, &args.file, args.proof, cfg)
                 .await?;
         } else {
             let clients = must_new_zgs_clients(&args.node).await;
             let downloader = Downloader::new(clients, routines)?;
             downloader
-                .download_fragments(roots, &args.file, args.proof, enc_key.as_ref())
+                .download_fragments(roots, &args.file, args.proof, cfg)
                 .await?;
         }
     } else {

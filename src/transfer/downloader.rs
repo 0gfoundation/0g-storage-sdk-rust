@@ -20,6 +20,92 @@ use std::io::Write as IoWrite;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
+/// Per-fragment decryption configuration for `download_fragments`.
+///
+/// `None` means the fragments are plaintext and concatenated as-is.
+/// `Symmetric` means v1 ciphertext: the header is parsed from fragment 0
+/// and the supplied 32-byte AES key is used directly.
+/// `Ecies` means v2 ciphertext: the v2 header is parsed from fragment 0,
+/// and the AES key is derived from the supplied wallet private key + the
+/// stored ephemeral pubkey via HKDF-SHA256 over secp256k1 ECDH.
+#[derive(Clone)]
+pub enum FragmentDecryptConfig {
+    None,
+    Symmetric { key: [u8; 32] },
+    Ecies { wallet_priv: [u8; 32] },
+}
+
+/// Per-call decryption state for `download_fragments`. Keeps the parsed
+/// header, derived AES key, and the cumulative CTR data offset so the
+/// stream cipher seeks correctly across fragment boundaries.
+#[derive(Default)]
+pub struct FragmentDecryptState {
+    header: Option<EncryptionHeader>,
+    aes_key: Option<[u8; 32]>,
+    data_offset: u64,
+}
+
+/// Decrypt one fragment of a multi-fragment download. The first fragment
+/// (`is_first = true`) carries the encryption header; subsequent fragments
+/// continue the AES-CTR keystream from `state.data_offset`.
+pub fn decrypt_fragment(
+    cfg: &FragmentDecryptConfig,
+    state: &mut FragmentDecryptState,
+    fragment_data: &[u8],
+    is_first: bool,
+) -> Result<Vec<u8>> {
+    match cfg {
+        FragmentDecryptConfig::None => Ok(fragment_data.to_vec()),
+        FragmentDecryptConfig::Symmetric { key } => {
+            if is_first {
+                let header = EncryptionHeader::parse(fragment_data)
+                    .context("parse v1/v2 encryption header from fragment 0")?;
+                state.header = Some(header);
+                state.aes_key = Some(*key);
+            }
+            do_fragment_decrypt(state, fragment_data, is_first)
+        }
+        FragmentDecryptConfig::Ecies { wallet_priv } => {
+            if is_first {
+                let header = EncryptionHeader::parse(fragment_data)
+                    .context("parse v2 encryption header from fragment 0")?;
+                if header.version != ENCRYPTION_VERSION_V2 {
+                    anyhow::bail!(
+                        "wallet_private_key set but ciphertext is not v2 (got version {})",
+                        header.version
+                    );
+                }
+                let eph = header
+                    .ephemeral_pub
+                    .ok_or_else(|| anyhow::anyhow!("v2 header missing ephemeral pubkey"))?;
+                let key = derive_ecies_decrypt_key(wallet_priv, &eph)?;
+                state.header = Some(header);
+                state.aes_key = Some(key);
+            }
+            do_fragment_decrypt(state, fragment_data, is_first)
+        }
+    }
+}
+
+fn do_fragment_decrypt(
+    state: &mut FragmentDecryptState,
+    fragment_data: &[u8],
+    is_first: bool,
+) -> Result<Vec<u8>> {
+    let header = state
+        .header
+        .as_ref()
+        .ok_or_else(|| anyhow::anyhow!("encryption header not yet available"))?;
+    let key = state
+        .aes_key
+        .as_ref()
+        .ok_or_else(|| anyhow::anyhow!("AES key not yet derived"))?;
+    let (plaintext, new_offset) =
+        decrypt_fragment_data(key, header, fragment_data, is_first, state.data_offset)?;
+    state.data_offset = new_offset;
+    Ok(plaintext)
+}
+
 pub struct Downloader {
     pub clients: Vec<ZgsClient>,
     routines: usize,
@@ -92,16 +178,16 @@ impl Downloader {
     /// corresponds to one fragment of a large file that was split before upload.
     /// The fragments are downloaded sequentially and appended in order.
     ///
-    /// When `encryption_key` is provided the fragments are treated as parts of a
-    /// continuous AES-256-CTR encrypted stream: the 17-byte header is extracted
-    /// from fragment 0 and the CTR byte-offset is tracked across all fragments so
-    /// the plaintext is reconstructed correctly.
+    /// Pass a `FragmentDecryptConfig` to control decryption. Use
+    /// `FragmentDecryptConfig::None` for plaintext fragments,
+    /// `FragmentDecryptConfig::Symmetric` for v1 AES-256-CTR, or
+    /// `FragmentDecryptConfig::Ecies` for v2 ECIES.
     pub async fn download_fragments(
         &self,
         roots: Vec<H256>,
         file: &PathBuf,
         with_proof: bool,
-        encryption_key: Option<&[u8; 32]>,
+        decrypt_cfg: FragmentDecryptConfig,
     ) -> Result<()> {
         if roots.is_empty() {
             anyhow::bail!("No root hashes provided");
@@ -109,9 +195,7 @@ impl Downloader {
 
         let mut out = std::fs::File::create(file)
             .with_context(|| format!("Failed to create output file {:?}", file))?;
-
-        let mut header: Option<EncryptionHeader> = None;
-        let mut data_offset: u64 = 0;
+        let mut state = FragmentDecryptState::default();
 
         for (i, root) in roots.iter().enumerate() {
             // Use a temp path next to the target file
@@ -125,25 +209,10 @@ impl Downloader {
                 .with_context(|| format!("Failed to read fragment {}", i))?;
             let _ = std::fs::remove_file(&temp_path);
 
-            if let Some(key) = encryption_key {
-                // Parse header from the very first fragment
-                if i == 0 {
-                    header = Some(
-                        EncryptionHeader::parse(&fragment_data)
-                            .context("Failed to parse encryption header from fragment 0")?,
-                    );
-                }
-                let hdr = header.as_ref().unwrap();
-                let (plaintext, new_offset) =
-                    decrypt_fragment_data(key, hdr, &fragment_data, i == 0, data_offset)
-                        .with_context(|| format!("Failed to decrypt fragment {}", i))?;
-                data_offset = new_offset;
-                out.write_all(&plaintext)
-                    .with_context(|| format!("Failed to write fragment {}", i))?;
-            } else {
-                out.write_all(&fragment_data)
-                    .with_context(|| format!("Failed to write fragment {}", i))?;
-            }
+            let plaintext = decrypt_fragment(&decrypt_cfg, &mut state, &fragment_data, i == 0)
+                .with_context(|| format!("Failed to decrypt fragment {}", i))?;
+            out.write_all(&plaintext)
+                .with_context(|| format!("Failed to write fragment {}", i))?;
 
             log::info!("Downloaded and appended fragment {}/{}", i + 1, roots.len());
         }
@@ -842,6 +911,28 @@ mod ecies_dispatch_tests {
     };
     use k256::SecretKey;
     use rand::rngs::OsRng;
+
+    #[test]
+    fn fragment_decrypt_helper_v2() {
+        let recipient_priv = SecretKey::random(&mut OsRng);
+        let recipient_pub = recipient_priv.public_key().to_sec1_bytes();
+        let (aes_key, eph) = derive_ecies_encrypt_key(&recipient_pub).unwrap();
+        let header = EncryptionHeader::new_ecies(eph);
+
+        let plaintext = b"fragment v2 helper".to_vec();
+        let mut encrypted = plaintext.clone();
+        crypt_at(&aes_key, &header.nonce, 0, &mut encrypted);
+        let mut frag0 = header.to_bytes();
+        frag0.extend_from_slice(&encrypted);
+
+        let mut priv_bytes = [0u8; 32];
+        priv_bytes.copy_from_slice(&recipient_priv.to_bytes());
+
+        let cfg = FragmentDecryptConfig::Ecies { wallet_priv: priv_bytes };
+        let mut state = FragmentDecryptState::default();
+        let out = decrypt_fragment(&cfg, &mut state, &frag0, true).unwrap();
+        assert_eq!(out, plaintext);
+    }
 
     /// Verify the version-dispatch path of `DownloadContext` itself by exercising
     /// the header-cache helper directly (no network).
