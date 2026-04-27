@@ -4,13 +4,34 @@ use rand::Rng;
 
 type Aes256Ctr = ctr::Ctr128BE<aes::Aes256>;
 
-pub const ENCRYPTION_HEADER_SIZE: usize = 17;
-pub const ENCRYPTION_VERSION: u8 = 1;
+// --- Header constants ----------------------------------------------------
+// v1 = symmetric (AES key supplied out-of-band): 1B version + 16B nonce
+// v2 = ECIES (recipient supplies wallet private key): 1B version + 33B compressed
+//      ephemeral secp256k1 pubkey + 16B nonce
+pub const ENCRYPTION_VERSION_V1: u8 = 1;
+pub const ENCRYPTION_VERSION_V2: u8 = 2;
+pub const ENCRYPTION_HEADER_SIZE_V1: usize = 17;
+pub const ENCRYPTION_HEADER_SIZE_V2: usize = 50;
+pub const MAX_ENCRYPTION_HEADER_SIZE: usize = ENCRYPTION_HEADER_SIZE_V2;
+pub const EPHEMERAL_PUBKEY_SIZE: usize = 33;
 
-#[derive(Clone)]
+/// Backward-compat alias: callers in dependent crates may still import
+/// `ENCRYPTION_HEADER_SIZE` and treat it as the v1 size. New code should
+/// call `EncryptionHeader::size()` instead.
+#[deprecated(
+    note = "use EncryptionHeader::size() (returns 17 or 50) — this constant is the v1 size only"
+)]
+pub const ENCRYPTION_HEADER_SIZE: usize = ENCRYPTION_HEADER_SIZE_V1;
+/// Backward-compat alias.
+#[deprecated(note = "use ENCRYPTION_VERSION_V1 / ENCRYPTION_VERSION_V2 explicitly")]
+pub const ENCRYPTION_VERSION: u8 = ENCRYPTION_VERSION_V1;
+
+#[derive(Clone, Debug)]
 pub struct EncryptionHeader {
     pub version: u8,
     pub nonce: [u8; 16],
+    /// Compressed secp256k1 ephemeral public key. `None` for v1, `Some(_)` for v2.
+    pub ephemeral_pub: Option<[u8; EPHEMERAL_PUBKEY_SIZE]>,
 }
 
 impl Default for EncryptionHeader {
@@ -20,37 +41,110 @@ impl Default for EncryptionHeader {
 }
 
 impl EncryptionHeader {
+    /// New v1 (symmetric) header with a random nonce.
     pub fn new() -> Self {
         let mut nonce = [0u8; 16];
         rand::thread_rng().fill(&mut nonce);
         Self {
-            version: ENCRYPTION_VERSION,
+            version: ENCRYPTION_VERSION_V1,
             nonce,
+            ephemeral_pub: None,
         }
     }
 
+    /// New v2 (ECIES) header carrying the supplied compressed ephemeral pubkey
+    /// and a fresh random nonce. The caller is responsible for deriving and
+    /// using the matching AES key (see `transfer::ecies::derive_ecies_encrypt_key`).
+    pub fn new_ecies(ephemeral_pub: [u8; EPHEMERAL_PUBKEY_SIZE]) -> Self {
+        let mut nonce = [0u8; 16];
+        rand::thread_rng().fill(&mut nonce);
+        Self {
+            version: ENCRYPTION_VERSION_V2,
+            nonce,
+            ephemeral_pub: Some(ephemeral_pub),
+        }
+    }
+
+    /// Serialized size of this header (17 for v1, 50 for v2).
+    pub fn size(&self) -> usize {
+        match self.version {
+            ENCRYPTION_VERSION_V2 => ENCRYPTION_HEADER_SIZE_V2,
+            _ => ENCRYPTION_HEADER_SIZE_V1,
+        }
+    }
+
+    /// Parse a header by dispatching on the leading version byte.
     pub fn parse(data: &[u8]) -> Result<Self> {
-        if data.len() < ENCRYPTION_HEADER_SIZE {
-            anyhow::bail!(
-                "Data too short for encryption header: {} < {}",
-                data.len(),
-                ENCRYPTION_HEADER_SIZE
-            );
+        if data.is_empty() {
+            anyhow::bail!("Data too short for encryption header: 0 bytes");
         }
         let version = data[0];
-        if version != ENCRYPTION_VERSION {
-            anyhow::bail!("Unsupported encryption version: {}", version);
+        match version {
+            ENCRYPTION_VERSION_V1 => {
+                if data.len() < ENCRYPTION_HEADER_SIZE_V1 {
+                    anyhow::bail!(
+                        "Data too short for v1 encryption header: {} < {}",
+                        data.len(),
+                        ENCRYPTION_HEADER_SIZE_V1
+                    );
+                }
+                let mut nonce = [0u8; 16];
+                nonce.copy_from_slice(&data[1..17]);
+                Ok(Self {
+                    version,
+                    nonce,
+                    ephemeral_pub: None,
+                })
+            }
+            ENCRYPTION_VERSION_V2 => {
+                if data.len() < ENCRYPTION_HEADER_SIZE_V2 {
+                    anyhow::bail!(
+                        "Data too short for v2 encryption header: {} < {}",
+                        data.len(),
+                        ENCRYPTION_HEADER_SIZE_V2
+                    );
+                }
+                let mut eph = [0u8; EPHEMERAL_PUBKEY_SIZE];
+                eph.copy_from_slice(&data[1..34]);
+                let mut nonce = [0u8; 16];
+                nonce.copy_from_slice(&data[34..50]);
+                Ok(Self {
+                    version,
+                    nonce,
+                    ephemeral_pub: Some(eph),
+                })
+            }
+            other => anyhow::bail!("Unsupported encryption version: {}", other),
         }
-        let mut nonce = [0u8; 16];
-        nonce.copy_from_slice(&data[1..17]);
-        Ok(Self { version, nonce })
     }
 
-    pub fn to_bytes(&self) -> [u8; ENCRYPTION_HEADER_SIZE] {
-        let mut buf = [0u8; ENCRYPTION_HEADER_SIZE];
-        buf[0] = self.version;
-        buf[1..17].copy_from_slice(&self.nonce);
-        buf
+    /// Serialize the header (size depends on version: 17 or 50 bytes).
+    ///
+    /// # Panics
+    /// Panics if `version == ENCRYPTION_VERSION_V2` but `ephemeral_pub` is `None`.
+    /// In normal use this state is unreachable: `new_ecies()` always sets the field,
+    /// and `parse()` rejects v2 headers that lack the ephemeral pubkey. The panic
+    /// only fires if a caller constructs the struct directly with mismatched fields.
+    pub fn to_bytes(&self) -> Vec<u8> {
+        match self.version {
+            ENCRYPTION_VERSION_V2 => {
+                let mut buf = vec![0u8; ENCRYPTION_HEADER_SIZE_V2];
+                buf[0] = ENCRYPTION_VERSION_V2;
+                let eph = self
+                    .ephemeral_pub
+                    .as_ref()
+                    .expect("v2 header without ephemeral_pub");
+                buf[1..34].copy_from_slice(eph);
+                buf[34..50].copy_from_slice(&self.nonce);
+                buf
+            }
+            _ => {
+                let mut buf = vec![0u8; ENCRYPTION_HEADER_SIZE_V1];
+                buf[0] = ENCRYPTION_VERSION_V1;
+                buf[1..17].copy_from_slice(&self.nonce);
+                buf
+            }
+        }
     }
 }
 
@@ -65,8 +159,9 @@ pub fn crypt_at(key: &[u8; 32], nonce: &[u8; 16], offset: u64, data: &mut [u8]) 
 
 /// Decrypt a single fragment from a multi-fragment encrypted file.
 ///
-/// For fragment 0 (`is_first = true`): strips the 17-byte header and decrypts
-/// the remaining bytes starting at CTR offset 0.
+/// For fragment 0 (`is_first = true`): strips the header (size depends on
+/// version: 17 bytes for v1, 50 bytes for v2) and decrypts the remaining bytes
+/// starting at CTR offset 0.
 /// For subsequent fragments: decrypts all bytes using `data_offset` into the
 /// plaintext stream (the cumulative count of plaintext bytes written so far).
 ///
@@ -79,14 +174,16 @@ pub fn decrypt_fragment_data(
     is_first: bool,
     data_offset: u64,
 ) -> Result<(Vec<u8>, u64)> {
+    let header_size = header.size();
     if is_first {
-        if fragment_data.len() < ENCRYPTION_HEADER_SIZE {
+        if fragment_data.len() < header_size {
             anyhow::bail!(
-                "First fragment too short for encryption header: {} bytes",
-                fragment_data.len()
+                "First fragment too short for encryption header: {} bytes (need {})",
+                fragment_data.len(),
+                header_size
             );
         }
-        let mut plaintext = fragment_data[ENCRYPTION_HEADER_SIZE..].to_vec();
+        let mut plaintext = fragment_data[header_size..].to_vec();
         crypt_at(key, &header.nonce, 0, &mut plaintext);
         let new_offset = plaintext.len() as u64;
         Ok((plaintext, new_offset))
@@ -101,18 +198,21 @@ pub fn decrypt_fragment_data(
 /// Decrypt a full downloaded file in-place: strip header, decrypt remaining bytes.
 /// Returns the decrypted data (without header).
 pub fn decrypt_file(key: &[u8; 32], encrypted: &[u8]) -> Result<Vec<u8>> {
-    if encrypted.len() < ENCRYPTION_HEADER_SIZE {
+    let header = EncryptionHeader::parse(encrypted)?;
+    let header_size = header.size();
+    if encrypted.len() < header_size {
         anyhow::bail!("Encrypted data too short");
     }
-    let header = EncryptionHeader::parse(encrypted)?;
-    let mut data = encrypted[ENCRYPTION_HEADER_SIZE..].to_vec();
+    let mut data = encrypted[header_size..].to_vec();
     crypt_at(key, &header.nonce, 0, &mut data);
     Ok(data)
 }
 
 /// Decrypt a single downloaded segment.
-/// For segment 0: parses header from the first 17 bytes, decrypts the remaining data.
-/// For other segments: decrypts using the provided header's nonce with the correct data offset.
+/// For segment 0: skips the header bytes (size depends on version: 17 for v1,
+/// 50 for v2), decrypts the remaining data starting at CTR offset 0.
+/// For other segments: decrypts using the provided header's nonce with the
+/// correct data offset.
 ///
 /// `segment_size` is the standard segment size (e.g. DEFAULT_SEGMENT_SIZE = 256KB).
 pub fn decrypt_segment(
@@ -122,16 +222,17 @@ pub fn decrypt_segment(
     segment_data: &[u8],
     header: &EncryptionHeader,
 ) -> Vec<u8> {
+    let header_size = header.size();
     if segment_index == 0 {
         // First segment: skip header bytes, decrypt the rest starting at data offset 0
-        let encrypted = &segment_data[ENCRYPTION_HEADER_SIZE..];
+        let encrypted = &segment_data[header_size..];
         let mut data = encrypted.to_vec();
         crypt_at(key, &header.nonce, 0, &mut data);
         data
     } else {
         // Other segments: all bytes are encrypted data
-        // Data offset = segment_index * segment_size - ENCRYPTION_HEADER_SIZE
-        let data_offset = segment_index * segment_size - ENCRYPTION_HEADER_SIZE as u64;
+        // Data offset = segment_index * segment_size - header_size
+        let data_offset = segment_index * segment_size - header_size as u64;
         let mut data = segment_data.to_vec();
         crypt_at(key, &header.nonce, data_offset, &mut data);
         data
@@ -147,7 +248,7 @@ mod tests {
         let header = EncryptionHeader::new();
         let bytes = header.to_bytes();
         let parsed = EncryptionHeader::parse(&bytes).unwrap();
-        assert_eq!(parsed.version, ENCRYPTION_VERSION);
+        assert_eq!(parsed.version, ENCRYPTION_VERSION_V1);
         assert_eq!(parsed.nonce, header.nonce);
     }
 
@@ -212,7 +313,7 @@ mod tests {
         let segment_size = 256 * 1024u64; // 256KB
 
         // Build segment 0: header + encrypted plaintext
-        let plaintext = vec![0xABu8; (segment_size as usize) - ENCRYPTION_HEADER_SIZE];
+        let plaintext = vec![0xABu8; (segment_size as usize) - ENCRYPTION_HEADER_SIZE_V1];
         let mut encrypted = plaintext.clone();
         crypt_at(&key, &header.nonce, 0, &mut encrypted);
 
@@ -232,7 +333,7 @@ mod tests {
         let segment_size = 256 * 1024u64;
 
         // Segment 1's data offset is segment_size - HEADER_SIZE
-        let data_offset = segment_size - ENCRYPTION_HEADER_SIZE as u64;
+        let data_offset = segment_size - ENCRYPTION_HEADER_SIZE_V1 as u64;
         let plaintext = vec![0xCDu8; segment_size as usize];
         let mut encrypted = plaintext.clone();
         crypt_at(&key, &header.nonce, data_offset, &mut encrypted);
@@ -248,7 +349,7 @@ mod tests {
         let header = EncryptionHeader::new();
         let segment_size = 256 * 1024u64;
 
-        let plaintext = vec![0xEFu8; (segment_size as usize) - ENCRYPTION_HEADER_SIZE];
+        let plaintext = vec![0xEFu8; (segment_size as usize) - ENCRYPTION_HEADER_SIZE_V1];
         let mut encrypted = plaintext.clone();
         crypt_at(&key, &header.nonce, 0, &mut encrypted);
 
@@ -261,12 +362,12 @@ mod tests {
             &key,
             &header.nonce,
             0,
-            &mut result[ENCRYPTION_HEADER_SIZE..],
+            &mut result[ENCRYPTION_HEADER_SIZE_V1..],
         );
 
         // Header preserved, data decrypted
-        assert_eq!(&result[..ENCRYPTION_HEADER_SIZE], &header.to_bytes());
-        assert_eq!(&result[ENCRYPTION_HEADER_SIZE..], &plaintext);
+        assert_eq!(&result[..ENCRYPTION_HEADER_SIZE_V1], &header.to_bytes());
+        assert_eq!(&result[ENCRYPTION_HEADER_SIZE_V1..], &plaintext);
         assert_eq!(result.len(), segment_size as usize);
     }
 
@@ -344,8 +445,51 @@ mod tests {
     fn test_decrypt_fragment_data_first_too_short() {
         let key = [0x42u8; 32];
         let header = EncryptionHeader::new();
-        let short = vec![0u8; ENCRYPTION_HEADER_SIZE - 1];
+        let short = vec![0u8; ENCRYPTION_HEADER_SIZE_V1 - 1];
         assert!(decrypt_fragment_data(&key, &header, &short, true, 0).is_err());
+    }
+
+    #[test]
+    fn test_v2_header_roundtrip() {
+        let eph_pub = [0xAAu8; 33];
+        let header = EncryptionHeader::new_ecies(eph_pub);
+        assert_eq!(header.version, ENCRYPTION_VERSION_V2);
+        assert_eq!(header.size(), ENCRYPTION_HEADER_SIZE_V2);
+        assert_eq!(header.ephemeral_pub, Some(eph_pub));
+
+        let bytes = header.to_bytes();
+        assert_eq!(bytes.len(), ENCRYPTION_HEADER_SIZE_V2);
+        assert_eq!(bytes[0], ENCRYPTION_VERSION_V2);
+        assert_eq!(&bytes[1..34], &eph_pub);
+        assert_eq!(&bytes[34..50], &header.nonce);
+
+        let parsed = EncryptionHeader::parse(&bytes).unwrap();
+        assert_eq!(parsed.version, ENCRYPTION_VERSION_V2);
+        assert_eq!(parsed.nonce, header.nonce);
+        assert_eq!(parsed.ephemeral_pub, Some(eph_pub));
+        assert_eq!(parsed.size(), ENCRYPTION_HEADER_SIZE_V2);
+    }
+
+    #[test]
+    fn test_v1_header_size_unchanged() {
+        let header = EncryptionHeader::new();
+        assert_eq!(header.size(), ENCRYPTION_HEADER_SIZE_V1);
+        assert_eq!(header.size(), ENCRYPTION_HEADER_SIZE_V1);
+        assert!(header.ephemeral_pub.is_none());
+    }
+
+    #[test]
+    fn test_parse_rejects_v2_short() {
+        let mut data = vec![0u8; 49];
+        data[0] = ENCRYPTION_VERSION_V2;
+        assert!(EncryptionHeader::parse(&data).is_err());
+    }
+
+    #[test]
+    fn test_parse_rejects_unknown_version() {
+        let mut data = vec![0u8; 50];
+        data[0] = 99;
+        assert!(EncryptionHeader::parse(&data).is_err());
     }
 
     #[test]
@@ -355,7 +499,7 @@ mod tests {
         let header = EncryptionHeader::new();
         let segment_size = 256u64; // Small for testing
 
-        let plaintext = vec![0x77u8; (segment_size as usize) * 2 - ENCRYPTION_HEADER_SIZE];
+        let plaintext = vec![0x77u8; (segment_size as usize) * 2 - ENCRYPTION_HEADER_SIZE_V1];
         let mut full_encrypted = plaintext.clone();
         crypt_at(&key, &header.nonce, 0, &mut full_encrypted);
 
@@ -375,5 +519,41 @@ mod tests {
         let mut combined = seg0_decrypted;
         combined.extend_from_slice(&seg1_decrypted);
         assert_eq!(combined, plaintext);
+    }
+
+    #[test]
+    fn test_decrypt_fragment_data_v2_first() {
+        let key = [0x42u8; 32];
+        let eph = [0xAAu8; 33];
+        let header = EncryptionHeader::new_ecies(eph);
+        let plaintext = b"hello v2 fragment zero data";
+
+        let mut encrypted = plaintext.to_vec();
+        crypt_at(&key, &header.nonce, 0, &mut encrypted);
+        let mut fragment0 = header.to_bytes();
+        fragment0.extend_from_slice(&encrypted);
+
+        let (got, new_offset) = decrypt_fragment_data(&key, &header, &fragment0, true, 0).unwrap();
+        assert_eq!(got, plaintext);
+        assert_eq!(new_offset, plaintext.len() as u64);
+    }
+
+    #[test]
+    fn test_decrypt_segment_zero_v2() {
+        let key = [0x42u8; 32];
+        let eph = [0xAAu8; 33];
+        let header = EncryptionHeader::new_ecies(eph);
+        let segment_size = 256 * 1024u64;
+
+        let plaintext = vec![0xABu8; (segment_size as usize) - ENCRYPTION_HEADER_SIZE_V2];
+        let mut encrypted = plaintext.clone();
+        crypt_at(&key, &header.nonce, 0, &mut encrypted);
+
+        let mut segment_data = header.to_bytes();
+        segment_data.extend_from_slice(&encrypted);
+        assert_eq!(segment_data.len(), segment_size as usize);
+
+        let decrypted = decrypt_segment(&key, 0, segment_size, &segment_data, &header);
+        assert_eq!(decrypted, plaintext);
     }
 }

@@ -1,7 +1,7 @@
 use crate::common::utils::duration_from_str;
 use crate::indexer::client::IndexerClient;
 use crate::node::client_zgs::must_new_zgs_clients;
-use crate::transfer::downloader::Downloader;
+use crate::transfer::downloader::{Downloader, FragmentDecryptConfig};
 use crate::transfer::encryption::decrypt_file;
 use anyhow::{Context, Result};
 use clap::Args;
@@ -47,9 +47,21 @@ pub struct DownloadArgs {
 
     #[arg(
         long,
-        help = "Hex-encoded AES-256 encryption key (64 hex chars, optional 0x prefix)"
+        help = "[v1 symmetric] Hex-encoded 32-byte AES key (64 hex chars, optional 0x prefix). For asymmetric (ECIES), use --decrypt --private-key instead. Mutually exclusive with --decrypt."
     )]
     pub encryption_key: Option<String>,
+
+    #[arg(
+        long,
+        help = "[v2 asymmetric/ECIES] Decrypt ciphertext using --private-key as the recipient wallet private key. Mutually exclusive with --encryption-key (v1)."
+    )]
+    pub decrypt: bool,
+
+    #[arg(
+        long,
+        help = "[v2 asymmetric/ECIES] Hex-encoded 32-byte secp256k1 recipient wallet private key. Used with --decrypt."
+    )]
+    pub private_key: Option<String>,
 }
 
 pub async fn run_download(args: &DownloadArgs) -> Result<()> {
@@ -66,6 +78,26 @@ pub async fn run_download(args: &DownloadArgs) -> Result<()> {
         let mut key = [0u8; 32];
         key.copy_from_slice(&key_bytes);
         Some(key)
+    } else {
+        None
+    };
+
+    if args.decrypt && args.encryption_key.is_some() {
+        anyhow::bail!("--decrypt and --encryption-key are mutually exclusive");
+    }
+    let wallet_priv: Option<[u8; 32]> = if args.decrypt {
+        let pk_hex = args
+            .private_key
+            .as_ref()
+            .ok_or_else(|| anyhow::anyhow!("--decrypt requires --private-key"))?;
+        let pk_hex = pk_hex.strip_prefix("0x").unwrap_or(pk_hex);
+        let pk_bytes = hex::decode(pk_hex).context("Invalid private key hex")?;
+        if pk_bytes.len() != 32 {
+            anyhow::bail!("--private-key must be 32 bytes (64 hex chars)");
+        }
+        let mut buf = [0u8; 32];
+        buf.copy_from_slice(&pk_bytes);
+        Some(buf)
     } else {
         None
     };
@@ -98,16 +130,25 @@ pub async fn run_download(args: &DownloadArgs) -> Result<()> {
             .collect();
         let roots = roots?;
 
+        let cfg = match (&enc_key, &wallet_priv) {
+            (Some(k), None) => FragmentDecryptConfig::Symmetric { key: *k },
+            (None, Some(priv_key)) => FragmentDecryptConfig::Ecies {
+                wallet_priv: *priv_key,
+            },
+            (None, None) => FragmentDecryptConfig::None,
+            (Some(_), Some(_)) => unreachable!("guarded above"),
+        };
+
         if let Some(indexer_url) = &args.indexer {
             let indexer_client = IndexerClient::new(indexer_url).await?;
             indexer_client
-                .download_fragments(roots, &args.file, args.proof, enc_key.as_ref())
+                .download_fragments(roots, &args.file, args.proof, cfg)
                 .await?;
         } else {
             let clients = must_new_zgs_clients(&args.node).await;
             let downloader = Downloader::new(clients, routines)?;
             downloader
-                .download_fragments(roots, &args.file, args.proof, enc_key.as_ref())
+                .download_fragments(roots, &args.file, args.proof, cfg)
                 .await?;
         }
     } else {
@@ -131,7 +172,25 @@ pub async fn run_download(args: &DownloadArgs) -> Result<()> {
             let decrypted = decrypt_file(&key, &encrypted)?;
             std::fs::write(&args.file, &decrypted).context("Failed to write decrypted file")?;
             log::info!(
-                "Decrypted file ({} -> {} bytes)",
+                "Decrypted (v1) file ({} -> {} bytes)",
+                encrypted.len(),
+                decrypted.len()
+            );
+        } else if let Some(priv_key) = wallet_priv {
+            use crate::transfer::ecies::derive_ecies_decrypt_key;
+            use crate::transfer::encryption::{crypt_at, EncryptionHeader};
+            let encrypted = std::fs::read(&args.file).context("Failed to read downloaded file")?;
+            let header = EncryptionHeader::parse(&encrypted)?;
+            let eph = header
+                .ephemeral_pub
+                .ok_or_else(|| anyhow::anyhow!("downloaded file is not v2 ECIES ciphertext"))?;
+            let aes_key = derive_ecies_decrypt_key(&priv_key, &eph)?;
+            let header_size = header.size();
+            let mut decrypted = encrypted[header_size..].to_vec();
+            crypt_at(&aes_key, &header.nonce, 0, &mut decrypted);
+            std::fs::write(&args.file, &decrypted).context("Failed to write decrypted file")?;
+            log::info!(
+                "Decrypted (v2/ECIES) file ({} -> {} bytes)",
                 encrypted.len(),
                 decrypted.len()
             );

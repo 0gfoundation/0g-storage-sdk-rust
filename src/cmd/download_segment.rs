@@ -3,7 +3,7 @@ use crate::core::dataflow::DEFAULT_SEGMENT_SIZE;
 use crate::indexer::client::IndexerClient;
 use crate::node::client_zgs::must_new_zgs_clients;
 use crate::transfer::downloader::Downloader;
-use crate::transfer::encryption::{decrypt_segment, EncryptionHeader, ENCRYPTION_HEADER_SIZE};
+use crate::transfer::encryption::{decrypt_segment, EncryptionHeader, ENCRYPTION_HEADER_SIZE_V1};
 use anyhow::{Context, Result};
 use clap::Args;
 use ethers::types::H256;
@@ -43,9 +43,21 @@ pub struct DownloadSegmentArgs {
 
     #[arg(
         long,
-        help = "Hex-encoded AES-256 encryption key (64 hex chars, optional 0x prefix)"
+        help = "[v1 symmetric] Hex-encoded 32-byte AES key (64 hex chars, optional 0x prefix). For asymmetric (ECIES), use --decrypt --private-key instead. Mutually exclusive with --decrypt."
     )]
     pub encryption_key: Option<String>,
+
+    #[arg(
+        long,
+        help = "[v2 asymmetric/ECIES] Decrypt ciphertext using --private-key as the recipient wallet private key. Mutually exclusive with --encryption-key (v1)."
+    )]
+    pub decrypt: bool,
+
+    #[arg(
+        long,
+        help = "[v2 asymmetric/ECIES] Hex-encoded 32-byte secp256k1 recipient wallet private key. Used with --decrypt."
+    )]
+    pub private_key: Option<String>,
 }
 
 /// Parse and validate the encryption key from hex string.
@@ -71,26 +83,63 @@ pub async fn run_download_segment(args: &DownloadSegmentArgs) -> Result<()> {
         .map(|k| parse_encryption_key(k))
         .transpose()?;
 
+    let wallet_priv: Option<[u8; 32]> = if args.decrypt {
+        if args.encryption_key.is_some() {
+            anyhow::bail!("--decrypt and --encryption-key are mutually exclusive");
+        }
+        let pk_hex = args
+            .private_key
+            .as_ref()
+            .ok_or_else(|| anyhow::anyhow!("--decrypt requires --private-key"))?;
+        let pk_hex = pk_hex.strip_prefix("0x").unwrap_or(pk_hex);
+        let pk_bytes = hex::decode(pk_hex).context("Invalid private key hex")?;
+        if pk_bytes.len() != 32 {
+            anyhow::bail!("--private-key must be 32 bytes (64 hex chars)");
+        }
+        let mut buf = [0u8; 32];
+        buf.copy_from_slice(&pk_bytes);
+        Some(buf)
+    } else {
+        None
+    };
+
     if let Some(indexer_url) = &args.indexer {
         let indexer_client = IndexerClient::new(indexer_url).await?;
         let ctx = indexer_client
             .get_download_context(root, args.tx_seq)
             .await?;
 
-        let segment = if let Some(key) = &encryption_key {
+        let segment = if encryption_key.is_some() || wallet_priv.is_some() {
             // For decryption, we always need segment 0 to get the header
             let seg0 = ctx.download_segment(0, args.proof).await?;
-            if seg0.len() < ENCRYPTION_HEADER_SIZE {
+            if seg0.len() < ENCRYPTION_HEADER_SIZE_V1 {
                 anyhow::bail!("Segment 0 too short for encryption header");
             }
             let header = EncryptionHeader::parse(&seg0)?;
+            let aes_key = match header.version {
+                crate::transfer::encryption::ENCRYPTION_VERSION_V1 => {
+                    *encryption_key.as_ref().ok_or_else(|| {
+                        anyhow::anyhow!("v1 ciphertext but --encryption-key not provided")
+                    })?
+                }
+                crate::transfer::encryption::ENCRYPTION_VERSION_V2 => {
+                    let priv_key = wallet_priv.as_ref().ok_or_else(|| {
+                        anyhow::anyhow!("v2 ciphertext but --private-key not provided")
+                    })?;
+                    let eph = header
+                        .ephemeral_pub
+                        .ok_or_else(|| anyhow::anyhow!("v2 header missing ephemeral pubkey"))?;
+                    crate::transfer::ecies::derive_ecies_decrypt_key(priv_key, &eph)?
+                }
+                v => anyhow::bail!("Unsupported encryption version: {}", v),
+            };
 
             if args.segment_index == 0 {
-                decrypt_segment(key, 0, DEFAULT_SEGMENT_SIZE as u64, &seg0, &header)
+                decrypt_segment(&aes_key, 0, DEFAULT_SEGMENT_SIZE as u64, &seg0, &header)
             } else {
                 let seg = ctx.download_segment(args.segment_index, args.proof).await?;
                 decrypt_segment(
-                    key,
+                    &aes_key,
                     args.segment_index,
                     DEFAULT_SEGMENT_SIZE as u64,
                     &seg,
@@ -128,18 +177,35 @@ pub async fn run_download_segment(args: &DownloadSegmentArgs) -> Result<()> {
 
         let file_root = file_info.tx.data_merkle_root;
 
-        let segment = if let Some(key) = &encryption_key {
+        let segment = if encryption_key.is_some() || wallet_priv.is_some() {
             // For decryption, we always need segment 0 to get the header
             let seg0 = downloader
                 .download_segment(file_root, file_info.tx.seq, 0, args.proof, &file_info)
                 .await?;
-            if seg0.len() < ENCRYPTION_HEADER_SIZE {
+            if seg0.len() < ENCRYPTION_HEADER_SIZE_V1 {
                 anyhow::bail!("Segment 0 too short for encryption header");
             }
             let header = EncryptionHeader::parse(&seg0)?;
+            let aes_key = match header.version {
+                crate::transfer::encryption::ENCRYPTION_VERSION_V1 => {
+                    *encryption_key.as_ref().ok_or_else(|| {
+                        anyhow::anyhow!("v1 ciphertext but --encryption-key not provided")
+                    })?
+                }
+                crate::transfer::encryption::ENCRYPTION_VERSION_V2 => {
+                    let priv_key = wallet_priv.as_ref().ok_or_else(|| {
+                        anyhow::anyhow!("v2 ciphertext but --private-key not provided")
+                    })?;
+                    let eph = header
+                        .ephemeral_pub
+                        .ok_or_else(|| anyhow::anyhow!("v2 header missing ephemeral pubkey"))?;
+                    crate::transfer::ecies::derive_ecies_decrypt_key(priv_key, &eph)?
+                }
+                v => anyhow::bail!("Unsupported encryption version: {}", v),
+            };
 
             if args.segment_index == 0 {
-                decrypt_segment(key, 0, DEFAULT_SEGMENT_SIZE as u64, &seg0, &header)
+                decrypt_segment(&aes_key, 0, DEFAULT_SEGMENT_SIZE as u64, &seg0, &header)
             } else {
                 let seg = downloader
                     .download_segment(
@@ -151,7 +217,7 @@ pub async fn run_download_segment(args: &DownloadSegmentArgs) -> Result<()> {
                     )
                     .await?;
                 decrypt_segment(
-                    key,
+                    &aes_key,
                     args.segment_index,
                     DEFAULT_SEGMENT_SIZE as u64,
                     &seg,

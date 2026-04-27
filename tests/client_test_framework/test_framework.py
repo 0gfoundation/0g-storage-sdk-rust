@@ -119,6 +119,7 @@ class ClientTestFramework(TestFramework):
         fragment_size=None,
         skip_tx=True,
         encryption_key=None,
+        encrypt: bool = False,
     ):
         upload_args = [
             self.cli_binary,
@@ -144,6 +145,8 @@ class ClientTestFramework(TestFramework):
         if encryption_key is not None:
             upload_args.append("--encryption-key")
             upload_args.append(encryption_key)
+        if encrypt:
+            upload_args.append("--encrypt")
 
         upload_args.append("--file")
         self.log.info("upload file with cli: {}".format(upload_args))
@@ -212,6 +215,8 @@ class ClientTestFramework(TestFramework):
         with_proof=True,
         remove=True,
         encryption_key=None,
+        decrypt: bool = False,
+        recipient_private_key: str = None,
     ):
         if file_to_download is None:
             file_to_download = os.path.join(
@@ -243,6 +248,11 @@ class ClientTestFramework(TestFramework):
         if encryption_key is not None:
             download_args.append("--encryption-key")
             download_args.append(encryption_key)
+        if decrypt:
+            download_args.append("--decrypt")
+        if recipient_private_key is not None:
+            download_args.append("--private-key")
+            download_args.append(recipient_private_key)
         self.log.info("download file with cli: {}".format(download_args))
 
         output = tempfile.NamedTemporaryFile(
@@ -290,6 +300,8 @@ class ClientTestFramework(TestFramework):
         segment_index=0,
         with_proof=True,
         encryption_key=None,
+        decrypt: bool = False,
+        recipient_private_key: str = None,
     ):
         download_args = [
             self.cli_binary,
@@ -316,6 +328,11 @@ class ClientTestFramework(TestFramework):
         if encryption_key is not None:
             download_args.append("--encryption-key")
             download_args.append(encryption_key)
+        if decrypt:
+            download_args.append("--decrypt")
+        if recipient_private_key is not None:
+            download_args.append("--private-key")
+            download_args.append(recipient_private_key)
         self.log.info("download segment with cli: {}".format(download_args))
 
         output = tempfile.NamedTemporaryFile(

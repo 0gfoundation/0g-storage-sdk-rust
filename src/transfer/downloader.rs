@@ -1,6 +1,7 @@
 use super::download::download_file::DownloadingFile;
 use super::encryption::{
-    crypt_at, decrypt_fragment_data, decrypt_segment, EncryptionHeader, ENCRYPTION_HEADER_SIZE,
+    crypt_at, decrypt_fragment_data, decrypt_segment, EncryptionHeader, ENCRYPTION_VERSION_V1,
+    ENCRYPTION_VERSION_V2,
 };
 use crate::common::shard::ShardConfig;
 use crate::core::dataflow::{
@@ -10,6 +11,7 @@ use crate::core::dataflow::{
 use crate::core::file::File;
 use crate::node::client_zgs::ZgsClient;
 use crate::node::types::FileInfo;
+use crate::transfer::ecies::derive_ecies_decrypt_key;
 
 use anyhow::{Context, Result};
 use ethers::types::H256;
@@ -17,6 +19,99 @@ use futures::stream::{self, StreamExt, TryStreamExt};
 use std::io::Write as IoWrite;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
+
+/// Per-fragment decryption configuration for `download_fragments`.
+///
+/// `None` means the fragments are plaintext and concatenated as-is.
+/// `Symmetric` means v1 ciphertext: the header is parsed from fragment 0
+/// and the supplied 32-byte AES key is used directly.
+/// `Ecies` means v2 ciphertext: the v2 header is parsed from fragment 0,
+/// and the AES key is derived from the supplied wallet private key + the
+/// stored ephemeral pubkey via HKDF-SHA256 over secp256k1 ECDH.
+#[derive(Clone)]
+pub enum FragmentDecryptConfig {
+    None,
+    Symmetric { key: [u8; 32] },
+    Ecies { wallet_priv: [u8; 32] },
+}
+
+/// Per-call decryption state for `download_fragments`. Keeps the parsed
+/// header, derived AES key, and the cumulative CTR data offset so the
+/// stream cipher seeks correctly across fragment boundaries.
+#[derive(Default)]
+pub struct FragmentDecryptState {
+    header: Option<EncryptionHeader>,
+    aes_key: Option<[u8; 32]>,
+    data_offset: u64,
+}
+
+/// Decrypt one fragment of a multi-fragment download. The first fragment
+/// (`is_first = true`) carries the encryption header; subsequent fragments
+/// continue the AES-CTR keystream from `state.data_offset`.
+pub fn decrypt_fragment(
+    cfg: &FragmentDecryptConfig,
+    state: &mut FragmentDecryptState,
+    fragment_data: &[u8],
+    is_first: bool,
+) -> Result<Vec<u8>> {
+    match cfg {
+        FragmentDecryptConfig::None => Ok(fragment_data.to_vec()),
+        FragmentDecryptConfig::Symmetric { key } => {
+            if is_first {
+                let header = EncryptionHeader::parse(fragment_data)
+                    .context("parse v1/v2 encryption header from fragment 0")?;
+                if header.version != ENCRYPTION_VERSION_V1 {
+                    anyhow::bail!(
+                        "encryption_key supplied but ciphertext is not v1 (got version {}); \
+                         use FragmentDecryptConfig::Ecies for v2",
+                        header.version
+                    );
+                }
+                state.header = Some(header);
+                state.aes_key = Some(*key);
+            }
+            do_fragment_decrypt(state, fragment_data, is_first)
+        }
+        FragmentDecryptConfig::Ecies { wallet_priv } => {
+            if is_first {
+                let header = EncryptionHeader::parse(fragment_data)
+                    .context("parse v2 encryption header from fragment 0")?;
+                if header.version != ENCRYPTION_VERSION_V2 {
+                    anyhow::bail!(
+                        "wallet_private_key set but ciphertext is not v2 (got version {})",
+                        header.version
+                    );
+                }
+                let eph = header
+                    .ephemeral_pub
+                    .ok_or_else(|| anyhow::anyhow!("v2 header missing ephemeral pubkey"))?;
+                let key = derive_ecies_decrypt_key(wallet_priv, &eph)?;
+                state.header = Some(header);
+                state.aes_key = Some(key);
+            }
+            do_fragment_decrypt(state, fragment_data, is_first)
+        }
+    }
+}
+
+fn do_fragment_decrypt(
+    state: &mut FragmentDecryptState,
+    fragment_data: &[u8],
+    is_first: bool,
+) -> Result<Vec<u8>> {
+    let header = state
+        .header
+        .as_ref()
+        .ok_or_else(|| anyhow::anyhow!("encryption header not yet available"))?;
+    let key = state
+        .aes_key
+        .as_ref()
+        .ok_or_else(|| anyhow::anyhow!("AES key not yet derived"))?;
+    let (plaintext, new_offset) =
+        decrypt_fragment_data(key, header, fragment_data, is_first, state.data_offset)?;
+    state.data_offset = new_offset;
+    Ok(plaintext)
+}
 
 pub struct Downloader {
     pub clients: Vec<ZgsClient>,
@@ -46,6 +141,16 @@ impl Downloader {
         }
 
         Ok(Self { clients, routines })
+    }
+
+    /// Create a no-op downloader for unit tests that only exercise pure logic
+    /// (e.g. `resolve_decryption_key`) without touching the network.
+    #[cfg(test)]
+    pub(crate) fn new_test_only() -> Self {
+        Self {
+            clients: vec![],
+            routines: 1,
+        }
     }
 
     pub async fn download(&self, root: H256, file: &PathBuf, with_proof: bool) -> Result<()> {
@@ -80,16 +185,16 @@ impl Downloader {
     /// corresponds to one fragment of a large file that was split before upload.
     /// The fragments are downloaded sequentially and appended in order.
     ///
-    /// When `encryption_key` is provided the fragments are treated as parts of a
-    /// continuous AES-256-CTR encrypted stream: the 17-byte header is extracted
-    /// from fragment 0 and the CTR byte-offset is tracked across all fragments so
-    /// the plaintext is reconstructed correctly.
+    /// Pass a `FragmentDecryptConfig` to control decryption. Use
+    /// `FragmentDecryptConfig::None` for plaintext fragments,
+    /// `FragmentDecryptConfig::Symmetric` for v1 AES-256-CTR, or
+    /// `FragmentDecryptConfig::Ecies` for v2 ECIES.
     pub async fn download_fragments(
         &self,
         roots: Vec<H256>,
         file: &PathBuf,
         with_proof: bool,
-        encryption_key: Option<&[u8; 32]>,
+        decrypt_cfg: FragmentDecryptConfig,
     ) -> Result<()> {
         if roots.is_empty() {
             anyhow::bail!("No root hashes provided");
@@ -97,9 +202,7 @@ impl Downloader {
 
         let mut out = std::fs::File::create(file)
             .with_context(|| format!("Failed to create output file {:?}", file))?;
-
-        let mut header: Option<EncryptionHeader> = None;
-        let mut data_offset: u64 = 0;
+        let mut state = FragmentDecryptState::default();
 
         for (i, root) in roots.iter().enumerate() {
             // Use a temp path next to the target file
@@ -113,25 +216,10 @@ impl Downloader {
                 .with_context(|| format!("Failed to read fragment {}", i))?;
             let _ = std::fs::remove_file(&temp_path);
 
-            if let Some(key) = encryption_key {
-                // Parse header from the very first fragment
-                if i == 0 {
-                    header = Some(
-                        EncryptionHeader::parse(&fragment_data)
-                            .context("Failed to parse encryption header from fragment 0")?,
-                    );
-                }
-                let hdr = header.as_ref().unwrap();
-                let (plaintext, new_offset) =
-                    decrypt_fragment_data(key, hdr, &fragment_data, i == 0, data_offset)
-                        .with_context(|| format!("Failed to decrypt fragment {}", i))?;
-                data_offset = new_offset;
-                out.write_all(&plaintext)
-                    .with_context(|| format!("Failed to write fragment {}", i))?;
-            } else {
-                out.write_all(&fragment_data)
-                    .with_context(|| format!("Failed to write fragment {}", i))?;
-            }
+            let plaintext = decrypt_fragment(&decrypt_cfg, &mut state, &fragment_data, i == 0)
+                .with_context(|| format!("Failed to decrypt fragment {}", i))?;
+            out.write_all(&plaintext)
+                .with_context(|| format!("Failed to write fragment {}", i))?;
 
             log::info!("Downloaded and appended fragment {}/{}", i + 1, roots.len());
         }
@@ -614,8 +702,15 @@ pub struct DownloadContext {
     downloader: Downloader,
     file_info: FileInfo,
     file_root: H256,
+    /// v1: 32-byte symmetric AES key supplied out-of-band.
     encryption_key: Option<[u8; 32]>,
-    encryption_header: Mutex<Option<EncryptionHeader>>,
+    /// v2: 32-byte secp256k1 wallet private key. Used to derive the AES key
+    /// from the ephemeral pubkey carried in the v2 header.
+    wallet_private_key: Option<[u8; 32]>,
+    /// Header + AES key, jointly cached after the first segment-0 download.
+    /// Stored as a single Option so concurrent segment downloads cannot
+    /// observe a torn state where one is set without the other.
+    cached: Mutex<Option<(EncryptionHeader, [u8; 32])>>,
 }
 
 impl DownloadContext {
@@ -631,7 +726,8 @@ impl DownloadContext {
             file_info,
             file_root,
             encryption_key: None,
-            encryption_header: Mutex::new(None),
+            wallet_private_key: None,
+            cached: Mutex::new(None),
         })
     }
 
@@ -639,6 +735,16 @@ impl DownloadContext {
     /// Segment 0 must be downloaded first to extract the encryption header.
     pub fn with_encryption(mut self, key: [u8; 32]) -> Self {
         self.encryption_key = Some(key);
+        self
+    }
+
+    /// Enable decryption for v2 (ECIES) ciphertext using the recipient's
+    /// 32-byte secp256k1 wallet private key. The AES key is derived after
+    /// segment 0 is downloaded and the v2 header is parsed.
+    /// If both `with_encryption` and `with_wallet_private_key` are configured,
+    /// the on-wire header version determines which key is used.
+    pub fn with_wallet_private_key(mut self, priv_key: [u8; 32]) -> Self {
+        self.wallet_private_key = Some(priv_key);
         self
     }
 
@@ -656,10 +762,11 @@ impl DownloadContext {
             )
             .await?;
 
-        if let Some(key) = &self.encryption_key {
-            let header = self.get_or_parse_header(segment_index, &raw)?;
+        let encryption_active = self.encryption_key.is_some() || self.wallet_private_key.is_some();
+        if encryption_active {
+            let (header, key) = self.resolve_decryption_key(segment_index, &raw)?;
             Ok(decrypt_segment(
-                key,
+                &key,
                 segment_index,
                 DEFAULT_SEGMENT_SIZE as u64,
                 &raw,
@@ -690,16 +797,17 @@ impl DownloadContext {
             )
             .await?;
 
-        if let Some(key) = &self.encryption_key {
-            let header = self.get_or_parse_header(segment_index, &raw)?;
+        let encryption_active = self.encryption_key.is_some() || self.wallet_private_key.is_some();
+        if encryption_active {
+            let (header, key) = self.resolve_decryption_key(segment_index, &raw)?;
             if segment_index == 0 {
-                // Decrypt data after header, but preserve the header bytes
                 let mut result = raw;
-                crypt_at(key, &header.nonce, 0, &mut result[ENCRYPTION_HEADER_SIZE..]);
+                let header_size = header.size();
+                crypt_at(&key, &header.nonce, 0, &mut result[header_size..]);
                 Ok(result)
             } else {
                 Ok(decrypt_segment(
-                    key,
+                    &key,
                     segment_index,
                     DEFAULT_SEGMENT_SIZE as u64,
                     &raw,
@@ -711,27 +819,47 @@ impl DownloadContext {
         }
     }
 
-    /// Get the cached encryption header, or parse it from segment 0 data.
-    fn get_or_parse_header(
+    /// Parse the encryption header from segment 0 (caching it), then return
+    /// the (header, AES key) pair to use for decrypting this and subsequent
+    /// segments.  Dispatches on header version: v1 returns the configured
+    /// symmetric key, v2 derives an AES key from the wallet private key +
+    /// ephemeral pubkey.  The lock is held for the entire parse+derive+cache
+    /// write so concurrent callers cannot observe torn state.
+    pub(crate) fn resolve_decryption_key(
         &self,
         segment_index: u64,
         segment_data: &[u8],
-    ) -> Result<EncryptionHeader> {
-        let mut guard = self.encryption_header.lock().unwrap();
-        if let Some(header) = guard.as_ref() {
-            return Ok(header.clone());
+    ) -> Result<(EncryptionHeader, [u8; 32])> {
+        let mut guard = self.cached.lock().unwrap();
+        if let Some(cached) = guard.as_ref() {
+            return Ok(cached.clone());
         }
         if segment_index != 0 {
             anyhow::bail!("Encryption header not yet available; download segment 0 first");
         }
         let header = EncryptionHeader::parse(segment_data)?;
-        *guard = Some(header.clone());
-        Ok(header)
+        let key = match header.version {
+            ENCRYPTION_VERSION_V1 => *self.encryption_key.as_ref().ok_or_else(|| {
+                anyhow::anyhow!("v1 ciphertext but no symmetric encryption_key configured")
+            })?,
+            ENCRYPTION_VERSION_V2 => {
+                let priv_key = self.wallet_private_key.as_ref().ok_or_else(|| {
+                    anyhow::anyhow!("v2 ciphertext but no wallet_private_key configured")
+                })?;
+                let eph = header
+                    .ephemeral_pub
+                    .ok_or_else(|| anyhow::anyhow!("v2 header missing ephemeral pubkey"))?;
+                derive_ecies_decrypt_key(priv_key, &eph)?
+            }
+            other => anyhow::bail!("Unsupported encryption version: {}", other),
+        };
+        *guard = Some((header.clone(), key));
+        Ok((header, key))
     }
 
     /// Returns the parsed encryption header, if segment 0 has been downloaded.
     pub fn encryption_header(&self) -> Option<EncryptionHeader> {
-        self.encryption_header.lock().unwrap().clone()
+        self.cached.lock().unwrap().as_ref().map(|(h, _)| h.clone())
     }
 
     pub fn file_root(&self) -> H256 {
@@ -741,8 +869,150 @@ impl DownloadContext {
     pub fn file_info(&self) -> &FileInfo {
         &self.file_info
     }
+
+    #[cfg(test)]
+    pub(crate) fn test_only_with_wallet_priv(priv_key: [u8; 32]) -> Self {
+        // No-network context for unit-testing dispatch logic.
+        // The downloader/file_info/file_root fields are constructed with sentinel
+        // values; the test only exercises resolve_decryption_key which doesn't touch them.
+        use crate::node::types::Transaction;
+        Self {
+            downloader: Downloader::new_test_only(),
+            file_info: FileInfo {
+                tx: Transaction {
+                    stream_ids: vec![],
+                    data: vec![],
+                    data_merkle_root: H256::zero(),
+                    start_entry_index: 0,
+                    size: 0,
+                    seq: 0,
+                },
+                finalized: false,
+                is_cached: false,
+                uploaded_seg_num: 0,
+            },
+            file_root: H256::zero(),
+            encryption_key: None,
+            wallet_private_key: Some(priv_key),
+            cached: Mutex::new(None),
+        }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn test_only_with_encryption_key(key: [u8; 32]) -> Self {
+        // No-network context for unit-testing v1 dispatch logic.
+        use crate::node::types::Transaction;
+        Self {
+            downloader: Downloader::new_test_only(),
+            file_info: FileInfo {
+                tx: Transaction {
+                    stream_ids: vec![],
+                    data: vec![],
+                    data_merkle_root: H256::zero(),
+                    start_entry_index: 0,
+                    size: 0,
+                    seq: 0,
+                },
+                finalized: false,
+                is_cached: false,
+                uploaded_seg_num: 0,
+            },
+            file_root: H256::zero(),
+            encryption_key: Some(key),
+            wallet_private_key: None,
+            cached: Mutex::new(None),
+        }
+    }
 }
 
 pub fn get_shard_configs(clients: &[ZgsClient]) -> Vec<ShardConfig> {
     clients.iter().map(|c| c.shard_config().clone()).collect()
+}
+
+#[cfg(test)]
+mod ecies_dispatch_tests {
+    use super::*;
+    use crate::transfer::ecies::derive_ecies_encrypt_key;
+    use crate::transfer::encryption::{crypt_at, EncryptionHeader, ENCRYPTION_HEADER_SIZE_V2};
+    use k256::SecretKey;
+    use rand::rngs::OsRng;
+
+    #[test]
+    fn fragment_decrypt_helper_v2() {
+        let recipient_priv = SecretKey::random(&mut OsRng);
+        let recipient_pub = recipient_priv.public_key().to_sec1_bytes();
+        let (aes_key, eph) = derive_ecies_encrypt_key(&recipient_pub).unwrap();
+        let header = EncryptionHeader::new_ecies(eph);
+
+        let plaintext = b"fragment v2 helper".to_vec();
+        let mut encrypted = plaintext.clone();
+        crypt_at(&aes_key, &header.nonce, 0, &mut encrypted);
+        let mut frag0 = header.to_bytes();
+        frag0.extend_from_slice(&encrypted);
+
+        let mut priv_bytes = [0u8; 32];
+        priv_bytes.copy_from_slice(&recipient_priv.to_bytes());
+
+        let cfg = FragmentDecryptConfig::Ecies {
+            wallet_priv: priv_bytes,
+        };
+        let mut state = FragmentDecryptState::default();
+        let out = decrypt_fragment(&cfg, &mut state, &frag0, true).unwrap();
+        assert_eq!(out, plaintext);
+    }
+
+    /// Verify the version-dispatch path of `DownloadContext` itself by exercising
+    /// the header-cache helper directly (no network).
+    #[test]
+    fn resolves_v2_key_from_wallet_private_key() {
+        let recipient_priv = SecretKey::random(&mut OsRng);
+        let recipient_pub = recipient_priv.public_key().to_sec1_bytes();
+        let (aes_key, eph) = derive_ecies_encrypt_key(&recipient_pub).unwrap();
+        let header = EncryptionHeader::new_ecies(eph);
+
+        let plaintext = b"v2 ctx test payload".to_vec();
+        let mut encrypted = plaintext.clone();
+        crypt_at(&aes_key, &header.nonce, 0, &mut encrypted);
+        let mut seg0 = header.to_bytes();
+        seg0.extend_from_slice(&encrypted);
+
+        let mut priv_bytes = [0u8; 32];
+        priv_bytes.copy_from_slice(&recipient_priv.to_bytes());
+        let ctx = DownloadContext::test_only_with_wallet_priv(priv_bytes);
+
+        let resolved = ctx
+            .resolve_decryption_key(0, &seg0)
+            .expect("ctx must derive aes key from segment 0");
+        assert_eq!(resolved.1, aes_key);
+
+        let cached_header = ctx.encryption_header().unwrap();
+        assert_eq!(cached_header.version, 2);
+        assert_eq!(cached_header.size(), ENCRYPTION_HEADER_SIZE_V2);
+    }
+
+    #[test]
+    fn resolves_v1_key_from_encryption_key() {
+        use crate::transfer::encryption::{
+            crypt_at, EncryptionHeader, ENCRYPTION_HEADER_SIZE_V1, ENCRYPTION_VERSION_V1,
+        };
+
+        let aes_key = [0x55u8; 32];
+        let header = EncryptionHeader::new();
+        assert_eq!(header.version, ENCRYPTION_VERSION_V1);
+
+        let plaintext = b"v1 ctx test payload".to_vec();
+        let mut encrypted = plaintext.clone();
+        crypt_at(&aes_key, &header.nonce, 0, &mut encrypted);
+        let mut seg0 = header.to_bytes();
+        seg0.extend_from_slice(&encrypted);
+
+        let ctx = DownloadContext::test_only_with_encryption_key(aes_key);
+
+        let (header_out, key_out) = ctx
+            .resolve_decryption_key(0, &seg0)
+            .expect("ctx must return v1 key from segment 0");
+        assert_eq!(key_out, aes_key);
+        assert_eq!(header_out.version, ENCRYPTION_VERSION_V1);
+        assert_eq!(header_out.size(), ENCRYPTION_HEADER_SIZE_V1);
+    }
 }

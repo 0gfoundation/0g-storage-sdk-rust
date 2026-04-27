@@ -117,15 +117,25 @@ pub struct UploadArgs {
 
     #[arg(
         long,
-        help = "Hex-encoded AES-256 encryption key (64 hex chars, optional 0x prefix)"
+        help = "[v1 symmetric] Hex-encoded 32-byte AES key (64 hex chars, optional 0x prefix). For asymmetric (ECIES), use --encrypt instead. Mutually exclusive with --encrypt."
     )]
     pub encryption_key: Option<String>,
+
+    #[arg(
+        long,
+        help = "[v2 asymmetric/ECIES] Encrypt to the signer's wallet pubkey (derived from --key). Recipient decrypts with their matching wallet private key. Mutually exclusive with --encryption-key."
+    )]
+    pub encrypt: bool,
 }
 
 pub async fn run_upload(args: &UploadArgs) -> Result<()> {
     // Validate contract address arguments (Go logic)
     if args.market_address.is_some() && args.flow_address.is_none() {
         anyhow::bail!("--market-address requires --flow-address to be provided");
+    }
+
+    if args.encrypt && args.encryption_key.is_some() {
+        anyhow::bail!("--encrypt and --encryption-key are mutually exclusive");
     }
 
     let file: Arc<dyn IterableData> = if let Some(key_hex) = &args.encryption_key {
@@ -141,6 +151,18 @@ pub async fn run_upload(args: &UploadArgs) -> Result<()> {
         key.copy_from_slice(&key_bytes);
         let raw_file = Arc::new(File::open(&args.file)?);
         Arc::new(EncryptedData::new(raw_file, key)?)
+    } else if args.encrypt {
+        // Derive recipient pubkey from the signer's wallet private key (--key).
+        let pk_hex = args.key.strip_prefix("0x").unwrap_or(&args.key);
+        let pk_bytes = hex::decode(pk_hex).context("Invalid wallet private key hex")?;
+        if pk_bytes.len() != 32 {
+            anyhow::bail!("--key must be 32 bytes (64 hex chars)");
+        }
+        let secret =
+            k256::SecretKey::from_slice(&pk_bytes).context("invalid secp256k1 private key")?;
+        let pubkey_compressed = secret.public_key().to_sec1_bytes();
+        let raw_file = Arc::new(File::open(&args.file)?);
+        Arc::new(EncryptedData::new_ecies(raw_file, &pubkey_compressed)?)
     } else {
         Arc::new(File::open(&args.file)?)
     };
