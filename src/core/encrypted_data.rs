@@ -308,7 +308,9 @@ mod tests {
     }
 
     use crate::transfer::ecies::derive_ecies_decrypt_key;
-    use crate::transfer::encryption::{ENCRYPTION_HEADER_SIZE_V2, ENCRYPTION_VERSION_V2};
+    use crate::transfer::encryption::{
+        ENCRYPTION_HEADER_SIZE_V2, ENCRYPTION_VERSION_V1, ENCRYPTION_VERSION_V2,
+    };
     use k256::SecretKey;
     use rand::rngs::OsRng;
 
@@ -348,5 +350,81 @@ mod tests {
         let mut plaintext = buf[ENCRYPTION_HEADER_SIZE_V2..].to_vec();
         crate::transfer::encryption::crypt_at(&aes_key, &header.nonce, 0, &mut plaintext);
         assert_eq!(plaintext, original);
+    }
+
+    #[test]
+    fn test_encrypted_data_ecies_wrong_priv_yields_garbage() {
+        use crate::transfer::ecies::derive_ecies_decrypt_key;
+
+        let original = b"sensitive ECIES payload".to_vec();
+        let inner = Arc::new(DataInMemory::new(original.clone()).unwrap());
+
+        let intended_recipient = SecretKey::random(&mut OsRng);
+        let intended_pub = intended_recipient.public_key().to_sec1_bytes();
+        let encrypted = EncryptedData::new_ecies(inner, &intended_pub).unwrap();
+        let mut wire = vec![0u8; encrypted.size() as usize];
+        encrypted.read(&mut wire, 0).unwrap();
+
+        // Attacker uses a different (random) private key.
+        let attacker = SecretKey::random(&mut OsRng);
+        let mut attacker_priv = [0u8; 32];
+        attacker_priv.copy_from_slice(&attacker.to_bytes());
+
+        let header = crate::transfer::encryption::EncryptionHeader::parse(&wire).unwrap();
+        let eph = header.ephemeral_pub.unwrap();
+        // ECDH between attacker_priv and ephemeral_pub yields a different shared secret,
+        // so the derived AES key differs from the one the sender used.
+        let bad_key = derive_ecies_decrypt_key(&attacker_priv, &eph).unwrap();
+
+        let header_size = header.size();
+        let mut bad_plaintext = wire[header_size..].to_vec();
+        crate::transfer::encryption::crypt_at(&bad_key, &header.nonce, 0, &mut bad_plaintext);
+        assert_ne!(
+            bad_plaintext, original,
+            "attacker with wrong private key must NOT recover plaintext"
+        );
+    }
+
+    #[test]
+    fn test_encrypted_data_v1_and_v2_side_by_side() {
+        use crate::transfer::ecies::derive_ecies_decrypt_key;
+        use crate::transfer::encryption::{
+            decrypt_file, EncryptionHeader, ENCRYPTION_VERSION_V1, ENCRYPTION_VERSION_V2,
+        };
+
+        let plaintext = b"v1+v2 same payload sanity check".to_vec();
+
+        // v1 (symmetric)
+        {
+            let inner = Arc::new(DataInMemory::new(plaintext.clone()).unwrap());
+            let key = [0xCAu8; 32];
+            let encrypted = EncryptedData::new(inner, key).unwrap();
+            let mut wire = vec![0u8; encrypted.size() as usize];
+            encrypted.read(&mut wire, 0).unwrap();
+
+            let header = EncryptionHeader::parse(&wire).unwrap();
+            assert_eq!(header.version, ENCRYPTION_VERSION_V1);
+            let recovered = decrypt_file(&key, &wire).unwrap();
+            assert_eq!(recovered, plaintext);
+        }
+
+        // v2 (ECIES)
+        {
+            let inner = Arc::new(DataInMemory::new(plaintext.clone()).unwrap());
+            let recipient_priv = SecretKey::random(&mut OsRng);
+            let recipient_pub = recipient_priv.public_key().to_sec1_bytes();
+            let encrypted = EncryptedData::new_ecies(inner, &recipient_pub).unwrap();
+            let mut wire = vec![0u8; encrypted.size() as usize];
+            encrypted.read(&mut wire, 0).unwrap();
+
+            let header = EncryptionHeader::parse(&wire).unwrap();
+            assert_eq!(header.version, ENCRYPTION_VERSION_V2);
+            let eph = header.ephemeral_pub.unwrap();
+            let mut priv_bytes = [0u8; 32];
+            priv_bytes.copy_from_slice(&recipient_priv.to_bytes());
+            let aes_key = derive_ecies_decrypt_key(&priv_bytes, &eph).unwrap();
+            let recovered = decrypt_file(&aes_key, &wire).unwrap();
+            assert_eq!(recovered, plaintext);
+        }
     }
 }
